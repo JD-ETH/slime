@@ -133,7 +133,7 @@ class UpdateWeightFromDistributed:
             return
 
         param_size = param.numel() * param.element_size()
-        if buffer_size + param_size > self.args.update_weight_buffer_size:
+        if buffer_size + param_size > self.args.update_weight_buffer_size and converted_named_tensors:
             self._update_bucket_weights_from_distributed(converted_named_tensors, pbar=pbar)
             buffer_size = 0
         converted_named_tensors += convert_to_hf(self.args, self.model_name, name, param, self.quantization_config)
@@ -156,7 +156,7 @@ class UpdateWeightFromDistributed:
         param_size = param.numel() * param.element_size()
         if (
             buffer_size + param_size
-        ) * mpu.get_expert_model_parallel_world_size() > self.args.update_weight_buffer_size:
+        ) * mpu.get_expert_model_parallel_world_size() > self.args.update_weight_buffer_size and named_tensors:
             self._update_expert_bucket_weights_from_distributed(named_tensors, pbar=pbar)
             buffer_size = 0
 
@@ -211,7 +211,7 @@ class UpdateWeightFromDistributed:
         # lock the rollout engines to prevent dead lock on broadcast.
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
-
+        # breakpoint()
         refs = update_weights_from_distributed(
             self._group_name,
             self._model_update_groups,
