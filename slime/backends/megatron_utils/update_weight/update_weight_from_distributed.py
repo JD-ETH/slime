@@ -11,6 +11,7 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
+from slime.utils.timer import timer
 from slime.utils.distributed_utils import get_gloo_group, init_process_group
 
 from ..megatron_to_hf import convert_to_hf
@@ -81,35 +82,35 @@ class UpdateWeightFromDistributed:
             ray.get([engine.pause_generation.remote() for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
+        with timer("update_weights_from_distributed"):
+            buffer_size = 0
+            converted_named_tensors = []
+            # non expert params
+            pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_pp_src_rank else None
 
-        buffer_size = 0
-        converted_named_tensors = []
-        # non expert params
-        pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_pp_src_rank else None
+            for name, param in named_params_and_buffers(self.args, self.model):
+                if ".experts." in name:
+                    continue
+                buffer_size = self._update_weight_from_distributed(
+                    name, param, converted_named_tensors, buffer_size, pbar=pbar
+                )
 
-        for name, param in named_params_and_buffers(self.args, self.model):
-            if ".experts." in name:
-                continue
-            buffer_size = self._update_weight_from_distributed(
-                name, param, converted_named_tensors, buffer_size, pbar=pbar
-            )
+            if converted_named_tensors:
+                self._update_bucket_weights_from_distributed(converted_named_tensors, pbar=pbar)
 
-        if converted_named_tensors:
-            self._update_bucket_weights_from_distributed(converted_named_tensors, pbar=pbar)
+            dist.barrier(group=get_gloo_group())
 
-        dist.barrier(group=get_gloo_group())
+            buffer_size = 0
+            named_tensors = []
+            for name, param in named_params_and_buffers(self.args, self.model):
+                if ".experts." not in name:
+                    continue
+                buffer_size = self._update_expert_weight_from_distributed(
+                    name, param, named_tensors, buffer_size, pbar=pbar
+                )
 
-        buffer_size = 0
-        named_tensors = []
-        for name, param in named_params_and_buffers(self.args, self.model):
-            if ".experts." not in name:
-                continue
-            buffer_size = self._update_expert_weight_from_distributed(
-                name, param, named_tensors, buffer_size, pbar=pbar
-            )
-
-        if named_tensors:
-            self._update_expert_bucket_weights_from_distributed(named_tensors, pbar=pbar)
+            if named_tensors:
+                self._update_expert_bucket_weights_from_distributed(named_tensors, pbar=pbar)
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:

@@ -7,7 +7,7 @@ TIGHT_HOST_MEMORY = bool(int(os.environ.get("SLIME_TEST_TIGHT_HOST_MEMORY", "1")
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-NUM_GPUS = 2
+NUM_GPUS = 3
 
 
 
@@ -15,7 +15,6 @@ def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command("hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
-    U.hf_download_dataset("zhuzilin/aime-2024")
 
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
 
@@ -72,7 +71,7 @@ def execute():
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
-        "--rollout-num-gpus 1 "
+        "--rollout-num-gpus 2 "
         "--sglang-mem-fraction-static 0.8 "
     )
 
@@ -111,7 +110,7 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
-        extra_env_vars={"RAY_DEBUG": "1"},
+        # extra_env_vars={"RAY_DEBUG": "1"},
     )
 
 

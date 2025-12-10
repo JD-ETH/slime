@@ -183,9 +183,7 @@ class SGLangEngine(RayActor):
 
         url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
 
-        logger.info("Make Post, url: %s, payload: %s", url, payload)
         response = requests.post(url, json=payload or {})
-        logger.info("Request returned status code %d", response.status_code)
         
         try:
             response.raise_for_status()
