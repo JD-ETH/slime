@@ -16,7 +16,7 @@ from slime.utils.distributed_utils import get_gloo_group, init_process_group
 
 from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, named_params_and_buffers
-
+from .remote_transfer_plan import RemoteTransferPlan
 
 class UpdateWeightFromDistributed:
     """
@@ -42,6 +42,7 @@ class UpdateWeightFromDistributed:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self.transfer_plan = RemoteTransferPlan(args)
 
     def connect_rollout_engines(
         self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
@@ -55,14 +56,12 @@ class UpdateWeightFromDistributed:
         # For TP:
         #   1. AllGather paramters to rank 0
         #   2. Broadcast parameters from rank 0 to all sglang engines
-        self._is_pp_src_rank = (
-            mpu.get_data_parallel_rank(with_context_parallel=True) == 0 and mpu.get_tensor_model_parallel_rank() == 0
-        )
-        pp_rank = mpu.get_pipeline_model_parallel_rank()
-        if self._is_pp_src_rank:
-            self._group_name = f"slime-pp_{pp_rank}"
-
-        if self._is_pp_src_rank:
+        self._is_source = self.transfer_plan.is_source()
+        if self._is_source:
+            transfer_tasks = self.transfer_plan.get_transfer_tasks(self.model)
+            assert self.transfer_plan.mode == "nccl", "Only NCCL supported currently."
+            assert len(transfer_tasks) == 1, "Only single transfer task supported currently."
+            self._group_name, self._tensor_names = transfer_tasks[0].session, transfer_tasks[0].names
             if self._model_update_groups is not None:
                 disconnect_rollout_engines_from_distributed(
                     self.args, self._group_name, self._model_update_groups, self.rollout_engines
@@ -86,10 +85,11 @@ class UpdateWeightFromDistributed:
             buffer_size = 0
             converted_named_tensors = []
             # non expert params
-            pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_pp_src_rank else None
+            pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
             for name, param in named_params_and_buffers(self.args, self.model):
-                if ".experts." in name:
+                # transfer tp tensors 
+                if name not in self._tensor_names or ".experts." in name:
                     continue
                 buffer_size = self._update_weight_from_distributed(
                     name, param, converted_named_tensors, buffer_size, pbar=pbar
@@ -103,7 +103,8 @@ class UpdateWeightFromDistributed:
             buffer_size = 0
             named_tensors = []
             for name, param in named_params_and_buffers(self.args, self.model):
-                if ".experts." not in name:
+                # transfer expert tensors
+                if name not in self._tensor_names or ".experts." not in name:
                     continue
                 buffer_size = self._update_expert_weight_from_distributed(
                     name, param, named_tensors, buffer_size, pbar=pbar
@@ -130,7 +131,7 @@ class UpdateWeightFromDistributed:
         Returns updated bytes on source, None on non-source.
         """
         param = all_gather_param(name, param)
-        if not self._is_pp_src_rank:
+        if not self._is_source:
             return
 
         param_size = param.numel() * param.element_size()
@@ -193,7 +194,7 @@ class UpdateWeightFromDistributed:
             handle.wait()
 
         named_tensors.clear()
-        if not self._is_pp_src_rank:
+        if not self._is_source:
             return
 
         all_gathered_params = sum(all_gathered_params, [])
@@ -212,7 +213,6 @@ class UpdateWeightFromDistributed:
         # lock the rollout engines to prevent dead lock on broadcast.
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
-        # breakpoint()
         refs = update_weights_from_distributed(
             self._group_name,
             self._model_update_groups,
