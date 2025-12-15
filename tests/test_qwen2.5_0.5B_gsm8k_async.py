@@ -1,4 +1,3 @@
-import os
 import slime.utils.external_utils.command_utils as U
 
 FEW_GPU = U.get_bool_env_var("SLIME_TEST_FEW_GPU", "1")
