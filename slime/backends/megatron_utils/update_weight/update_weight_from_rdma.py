@@ -17,7 +17,7 @@ from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.model_loader import get_model
 from sglang.srt.server_args import ServerArgs
 from tqdm import tqdm
-
+import os
 from slime.utils.memory_utils import print_memory
 
 from .common import register_memory_transfer_engine
@@ -195,7 +195,8 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
     def _create_transfer_engine(self) -> TransferEngine:
         transfer_engine = TransferEngine()
         local_ip = ray._private.services.get_node_ip_address()
-        transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", "")
+        protocol = os.environ.get("PROTOCOL","rdma")
+        transfer_engine.initialize(local_ip, "P2PHANDSHAKE", protocol, "")
 
         logger.info(f"[RDMA] Local replica Transfer Engine initialized at port {transfer_engine.get_rpc_port()}")
         return transfer_engine

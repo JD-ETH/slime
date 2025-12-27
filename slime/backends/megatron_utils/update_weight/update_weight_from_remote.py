@@ -80,11 +80,14 @@ class UpdateWeightFromRemote:
             # non-expert weights, then to expert weights.
             non_expert_params_and_buffers = non_expert_named_params_and_buffers(self.args, self.model)
             expert_params_and_buffers = expert_named_params_and_buffers(self.args, self.model)
-            self._update_weights(non_expert_params_and_buffers)
-            dist.barrier(group=get_gloo_group())
-            self._update_expert_weights(expert_params_and_buffers)
-            dist.barrier(group=get_gloo_group())
-            self.finish_transfer_task()
+            with timer("non_expert_transfer"):
+                self._update_weights(non_expert_params_and_buffers)
+                dist.barrier(group=get_gloo_group())
+            with timer("expert_transfer"):
+                self._update_expert_weights(expert_params_and_buffers)
+                dist.barrier(group=get_gloo_group())
+            with timer("final_trans"):
+                self.finish_transfer_task()
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
@@ -114,7 +117,7 @@ class UpdateWeightFromRemote:
         pbar = tqdm(desc="[Update Weights]", total=0) if self._is_source else None
         buffer_size = 0
         converted_named_tensors = []
-        # non expert params
+
         for name, param in named_params_and_buffers:
             # transfer tp tensors
             assert ".experts." not in name, "Function intended for non-expert params only."
@@ -122,7 +125,7 @@ class UpdateWeightFromRemote:
 
         if converted_named_tensors:
             self._update_bucket_weights_from_remote(converted_named_tensors, pbar=pbar)
-
+        # 
     def _update_weight_from_remote(
         self,
         name: str,
@@ -135,7 +138,10 @@ class UpdateWeightFromRemote:
         Non-expert: gather TP → rm pad → HF → buffer (flush if full). All gather, PP source buffers.
         Returns updated bytes on source, None on non-source.
         """
-        param = all_gather_param(name, param)
+        # NOTE: all gather need extra buffer for
+
+        with timer(f"non_expert_all_tp_gather_source{self._is_source}"):
+            param = all_gather_param(name, param)
         if not self._is_source:
             return
 
@@ -158,7 +164,8 @@ class UpdateWeightFromRemote:
         """
         Expert: gather TP → rm pad → buffer. EP gather + HF deferred. Threshold × EP size.
         """
-        param = all_gather_param(name, param)
+        with timer(f"expert_all_gather_name_param_tp_gather"):
+            param = all_gather_param(name, param)
 
         param_size = param.numel() * param.element_size()
         if (
@@ -177,34 +184,35 @@ class UpdateWeightFromRemote:
         """
         Gather EP → HF → broadcast. Clears buffer.
         """
-        names = [name for name, _ in named_tensors]
-        all_names = [None] * mpu.get_expert_model_parallel_world_size()
-        dist.all_gather_object(all_names, names, group=mpu.get_expert_model_parallel_group())
+        with timer(f"expert_all_gather_name_param_ep_gather_source{self._is_source}"):
+            names = [name for name, _ in named_tensors]
+            all_names = [None] * mpu.get_expert_model_parallel_world_size()
+            dist.all_gather_object(all_names, names, group=mpu.get_expert_model_parallel_group())
 
-        for names in all_names:
-            assert len(named_tensors) == len(names), f"mismatch names length: {len(named_tensors)} != {len(names)}"
+            for names in all_names:
+                assert len(named_tensors) == len(names), f"mismatch names length: {len(named_tensors)} != {len(names)}"
 
-        all_gathered_params = [[] for _ in range(mpu.get_expert_model_parallel_world_size())]
-        handles = []
-        for i, (_name, param) in enumerate(named_tensors):
-            params = [
-                torch.empty_like(param.data, device=torch.cuda.current_device())
-                for _ in range(mpu.get_expert_model_parallel_world_size())
-            ]
-            handle = dist.all_gather(params, param.data, group=mpu.get_expert_model_parallel_group(), async_op=True)
-            handles.append(handle)
-            for ep_rank, names in enumerate(all_names):
-                all_gathered_params[ep_rank].append((names[i], params[ep_rank]))
-        for handle in handles:
-            handle.wait()
+            all_gathered_params = [[] for _ in range(mpu.get_expert_model_parallel_world_size())]
+            handles = []
+            for i, (_name, param) in enumerate(named_tensors):
+                params = [
+                    torch.empty_like(param.data, device=torch.cuda.current_device())
+                    for _ in range(mpu.get_expert_model_parallel_world_size())
+                ]
+                handle = dist.all_gather(params, param.data, group=mpu.get_expert_model_parallel_group(), async_op=True)
+                handles.append(handle)
+                for ep_rank, names in enumerate(all_names):
+                    all_gathered_params[ep_rank].append((names[i], params[ep_rank]))
+            for handle in handles:
+                handle.wait()
 
-        named_tensors.clear()
-        if not self._is_source:
-            return
+            named_tensors.clear()
+            if not self._is_source:
+                return
 
-        all_gathered_params = sum(all_gathered_params, [])
-        converted_hf_tensors = []
-        for name, param in all_gathered_params:
-            converted_hf_tensors += convert_to_hf(self.args, self.model_name, name, param, self.quantization_config)
+            all_gathered_params = sum(all_gathered_params, [])
+            converted_hf_tensors = []
+            for name, param in all_gathered_params:
+                converted_hf_tensors += convert_to_hf(self.args, self.model_name, name, param, self.quantization_config)
 
         self._update_bucket_weights_from_remote(converted_hf_tensors, pbar)

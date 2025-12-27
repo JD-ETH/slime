@@ -5,17 +5,36 @@ import typer
 
 import slime.utils.external_utils.command_utils as U
 
-MODEL_NAME = "Qwen3-4B"
+MODEL_NAME = "Qwen3-4B" # model wo experts, model w experts, big model like qwen235b
 MODEL_TYPE = "qwen3-4B"
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["nccl", "rdma"] = "nccl"
-    # Right now tp=ep=pp=1
-    num_train_gpus: int = 1
-    num_rollout_gpus: int = 1
-    # TODO: Add diverse parallelism settings; imbalance training/inference instances, etc for benchmark.
+    mode: Literal["nccl", "rdma", "te_nccl"] = "nccl"
+    # TODO: Right now ep=pp=1
+    
+    num_train_gpus: int = 1 # 1, 2, 4
+    num_rollout_gpus: int = 1 # 1, 2, 4
+    # training/rollout parallel
+    training_tp_size: int = 1 #  1, 2, 4
+    rollout_tp_size: int = 1 #  1, 2, 4
+    
+
+    # TODO:
+    # enable te_nccl
+    
+    # all_gather setting: one train gpu, single node, multi-nodes.
+
+    # train/rollout: same node, multi-nodes
+
+    # parallelism: tp, ep, pp
+    # 
+    # all_gather setting: one train gpu, single node,
+    # Target: TP > 1, pp > 1, no EP now.
+    # way: nccl, te-nccl, te-rdma
+    # train/rollout: same node
+    # train/rollout instances: 1-1, 1-2, 1-4, 1-8, 2-1
 
 
 def prepare(args: ScriptArgs):
@@ -27,6 +46,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    assert  args.num_train_gpus <= args.num_rollout_gpus, "currently cannot support training_gpus > rollout_gpus"
     num_gpus = args.num_train_gpus + args.num_rollout_gpus
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
@@ -47,7 +67,7 @@ def execute(args: ScriptArgs):
     )
     # Training parallellism settings
     perf_args = (
-        "--tensor-model-parallel-size 1 "
+        f"--tensor-model-parallel-size {args.training_tp_size} "
         # "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -78,7 +98,7 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {args.rollout_tp_size} " # basically equal to tp_size in sglang
         f"--rollout-num-gpus {args.num_rollout_gpus} "
         "--sglang-mem-fraction-static 0.8 "
     )
@@ -100,7 +120,6 @@ def execute(args: ScriptArgs):
         "--actor-num-gpus-per-node 1 "
         # 1GB buffer for weight update
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
-        # enable correctness check
         f"--check-weight-update-equal "
     )
     if args.mode == "rdma":

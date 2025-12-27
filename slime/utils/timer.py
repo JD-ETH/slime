@@ -34,7 +34,7 @@ class Timer(metaclass=SingletonMeta):
         if rank == 0:
             logger.info(f"Timer {name} end (elapsed: {elapsed_time:.1f}s)")
         with open(f"{LOGFILE}_{rank}.log", "a") as f:
-            f.write(f"Timer {name} end (elapsed: {elapsed_time*1000:.1f}ms)\n")
+            f.write(f"Timer {name} end (elapsed: {elapsed_time*1000:.3f}ms)\n")
 
     def reset(self, name=None):
         if name is None:
