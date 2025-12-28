@@ -22,11 +22,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # TODO: Right now ep=pp=1
     
-    num_train_gpus: int = 2 # 1, 2, 4
-    num_rollout_gpus: int = 4 # 1, 2, 4
+    num_train_gpus: int = 1 # 1, 2, 4
+    num_rollout_gpus: int = 1 # 1, 2, 4
     # training/rollout parallel
-    training_tp_size: int = 2 #  1, 2, 44
-    rollout_tp_size: int = 4 #  1, 2, 4
+    training_tp_size: int = 1 #  1, 2, 4
+    rollout_tp_size: int = 1 #  1, 2, 4
     
 
     # TODO:
