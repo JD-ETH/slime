@@ -150,7 +150,7 @@ class RemoteTransferPlan:
         all_targets = [
             (m_idx, k_idx) for m_idx in range(self._rollout_engine_count) for k_idx in range(self._num_gpu_per_engine)
         ]
-        # Assignments: source_rank -> {engin_rank: [engine_indices]}
+        # Assignments: source_rank -> {engine_rank: [engine_indices]}
         assignements = defaultdict(lambda: defaultdict(list))
         # First round robin assignment
         i = -1

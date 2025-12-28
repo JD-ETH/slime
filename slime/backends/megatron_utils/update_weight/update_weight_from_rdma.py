@@ -67,7 +67,6 @@ class TransferBundle:
             if ret < 0:
                 raise RuntimeError(f"Batch transfer weights via RDMA failed with error code {ret}.")
 
-
 class UpdateWeightFromRDMA(UpdateWeightFromRemote):
     """
     Update weights from RDMA using Transfer Engine.
@@ -127,16 +126,15 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                 self.session_id_to_engine_rank[session_id] = engine_rank
                 self.session_id_to_server_args[session_id] = create_server_args_from_dict(
                     ray.get(self.rollout_engines[engine_ind].get_server_info.remote())
-                )
+                ) # TODO: duplicated op when engine_id is called from other tuple of targets_to_query.
                 assert (
                     session_id is not None
                 ), f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
                 logger.info(
-                    f"[RDMA] Obtained remote {session_id} info from rollout engine {engine_ind} rank {engine_rank}"
+                    f"[RDMA] Obtained remote {session_id} info from rollout engine {engine_ind} rank {engine_rank}, target {targets_to_query}"
                 )
                 logger.info(f"[RDMA] Remote weight info has {len(weights_info)} tensors.")
-                # logger.info(list(weights_info.keys()))
-                self.remote_weight_infos_by_session_id[session_id] = weights_info
+                self.remote_weight_infos_by_session_id[session_id] = weights_info  # TODO: not sure if it's same for all tp ranks.
                 targets_to_session_id[(engine_ind, engine_rank)] = session_id
 
             print_memory("[RDMA] After obtaining remote weight info")
@@ -154,7 +152,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                         model_replica = self._create_inference_replica(
                             self.args.hf_checkpoint,
                             pp_shard=target.source_shard,
-                            target_rank=target.engine_rank,
+                            target_rank=target.engine_rank, # TODO: need to take ep/pp into account in the future.
                             target_tp=self.args.rollout_num_gpus_per_engine,
                             server_args=self.session_id_to_server_args[session_id],
                         )
@@ -271,12 +269,14 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         if self._is_paused:
             torch_memory_saver.resume(self.tag)
             self._is_paused = False
-        
         for transfer_bundle in self.engines.values():
-            transfer_bundle.model_replica.load_weights(converted_named_tensors)
+            # here "converted_named_tensors" after `all_gather` will be transferred to the ones of rollout_tp_rank again.
+            transfer_bundle.model_replica.load_weights(converted_named_tensors) 
         converted_named_tensors.clear()
 
     def finish_transfer_task(self) -> None:
+        if not self._is_source:
+            return
         # Execute transfer for each engine replica.
         for transfer_bundle in self.engines.values():
             transfer_bundle.execute()
@@ -318,13 +318,21 @@ class MockSglangDistributedContext:
         mock_pp_group = MagicMock()
         mock_pp_group.rank_in_group = self.pp_rank
         mock_pp_group.world_size = self.pp_size
-        # Mock underlying global variables
+        
+        # IMPORTANT: Set global variables FIRST, before any patches or model loading.
+        # The get_attention_tp_rank() function reads from _ATTN_TP_RANK global variable.
+        # Setting this BEFORE model loading ensures the correct value is used.
         sglang_server_args._global_server_args = self.server_args
         sglang_dp_attention._ATTN_TP_RANK = self.attn_tp_rank
         sglang_dp_attention._ATTN_TP_SIZE = self.attn_tp_size
-        sglang_dp_attention._ATTN_DP_RANK = None
+        sglang_dp_attention._ATTN_DP_RANK = 0
         sglang_dp_attention._ATTN_DP_SIZE = 1
-        # Mock parallelism getter
+        
+        # Mock parallelism getters
+        # IMPORTANT: We need to patch functions at BOTH locations:
+        # 1. Where they are defined (sglang.srt.layers.dp_attention)
+        # 2. Where they are imported and used (sglang.srt.models.qwen3, etc.)
+        # This is because Python's import creates a local reference in the importing module.
         self._patches = [
             patch("sglang.srt.distributed.parallel_state.get_tp_group", return_value=mock_group),
             patch("sglang.srt.distributed.get_pp_group", return_value=mock_pp_group),
@@ -332,10 +340,20 @@ class MockSglangDistributedContext:
                 "sglang.srt.distributed.parallel_state.get_tensor_model_parallel_world_size", return_value=self.tp_size
             ),
             patch("sglang.srt.distributed.parallel_state.get_tensor_model_parallel_rank", return_value=self.tp_rank),
+            # Patch at definition location
             patch("sglang.srt.layers.dp_attention.get_attention_tp_rank", return_value=self.attn_tp_rank),
             patch("sglang.srt.layers.dp_attention.get_attention_tp_size", return_value=self.attn_tp_size),
+            
+            
+            # Patch at import locations in model files - these are critical!
+            patch("sglang.srt.models.qwen3.get_attention_tp_rank", return_value=self.attn_tp_rank),
+            patch("sglang.srt.models.qwen3.get_attention_tp_size", return_value=self.attn_tp_size),
+            # Also patch in distributed module where get_tensor_model_parallel_rank may be imported
+            patch("sglang.srt.distributed.get_tensor_model_parallel_rank", return_value=self.tp_rank),
+            patch("sglang.srt.distributed.get_tensor_model_parallel_world_size", return_value=self.tp_size),
         ]
 
+        # Start all patches
         for p in self._patches:
             p.start()
 

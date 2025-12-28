@@ -8,33 +8,33 @@ import slime.utils.external_utils.command_utils as U
 MODEL_NAME = "Qwen3-4B" # model wo experts, model w experts, big model like qwen235b
 MODEL_TYPE = "qwen3-4B"
 
+# For h100 80g * 8:
+# training gpu cannot be only 1 because of oom
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["nccl", "rdma", "te_nccl"] = "nccl"
+    mode: Literal["nccl", "rdma"] = "nccl"
+    # enable single node
+    # tuning training/rollout gpus: --num-train-gpus 2 --training-tp-size 2 --num-rollout-gpus 4 --rollout-tp-size 4
+    # enable different Protocol By: PROTOCOL=NCCL
+    # docker: xinji1/slime_rdma:rdma in condor
+
     # TODO: Right now ep=pp=1
     
-    num_train_gpus: int = 1 # 1, 2, 4
-    num_rollout_gpus: int = 1 # 1, 2, 4
+    num_train_gpus: int = 2 # 1, 2, 4
+    num_rollout_gpus: int = 4 # 1, 2, 4
     # training/rollout parallel
-    training_tp_size: int = 1 #  1, 2, 4
-    rollout_tp_size: int = 1 #  1, 2, 4
+    training_tp_size: int = 2 #  1, 2, 44
+    rollout_tp_size: int = 4 #  1, 2, 4
     
 
     # TODO:
-    # enable te_nccl
-    
-    # all_gather setting: one train gpu, single node, multi-nodes.
+    # parallelism: ep, pp
+    # multi-nodes
+    # check actor num nodes > 1
+    # better performance
 
-    # train/rollout: same node, multi-nodes
-
-    # parallelism: tp, ep, pp
-    # 
-    # all_gather setting: one train gpu, single node,
-    # Target: TP > 1, pp > 1, no EP now.
-    # way: nccl, te-nccl, te-rdma
-    # train/rollout: same node
-    # train/rollout instances: 1-1, 1-2, 1-4, 1-8, 2-1
 
 
 def prepare(args: ScriptArgs):
@@ -46,7 +46,6 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
-    assert  args.num_train_gpus <= args.num_rollout_gpus, "currently cannot support training_gpus > rollout_gpus"
     num_gpus = args.num_train_gpus + args.num_rollout_gpus
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
@@ -116,8 +115,8 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
-        "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 1 "
+        "--actor-num-nodes 1 " 
+        f"--actor-num-gpus-per-node {args.num_train_gpus} "
         # 1GB buffer for weight update
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
         f"--check-weight-update-equal "
