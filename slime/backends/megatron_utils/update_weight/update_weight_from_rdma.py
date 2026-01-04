@@ -14,6 +14,9 @@ from mooncake.engine import TransferEngine
 _RDMA_OFFLOAD_CPU = os.environ.get("RDMA_OFFLOAD_CPU", "0") == "1"
 if _RDMA_OFFLOAD_CPU:
     from torch_memory_saver import torch_memory_saver
+
+# Check if load-transfer pipelining is enabled
+_RDMA_LOAD_TRANSFER_OVERLAP = os.environ.get("RDMA_LOAD_TRANSFER_OVERLAP", "0") == "1"
 from ray.actor import ActorHandle
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
@@ -307,23 +310,30 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             torch_memory_saver.resume(self.tag)
             self._is_paused = False
 
-        ret_batch = {}
-        for n, transfer_bundle in enumerate(self.engines.values()):
-            updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
-            ret_batch[n] = transfer_bundle.execute_each(updated_name)  # FIXME: Do not wait for finish here.
+        if _RDMA_LOAD_TRANSFER_OVERLAP:
+            # Pipelined approach: load weights and start async transfer immediately
+            ret_batch = {}
+            for n, transfer_bundle in enumerate(self.engines.values()):
+                updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
+                ret_batch[n] = transfer_bundle.execute_each(updated_name)
 
-        # FIXME: Add sync barrier for all transfers to finish.
-        for n, batch_ids in ret_batch.items():
-            result = self.engines[n].engine.get_batch_transfer_status(batch_ids)
-            if result < 0:
-                raise RuntimeError(f"Batch transfer weights via RDMA failed with error code {result}.")
+            # Wait for all transfers to finish
+            for n, batch_ids in ret_batch.items():
+                result = self.engines[n].engine.get_batch_transfer_status(batch_ids)
+                if result < 0:
+                    raise RuntimeError(f"Batch transfer weights via RDMA failed with error code {result}.")
+        else:
+            # Original approach: load all weights first
+            for transfer_bundle in self.engines.values():
+                transfer_bundle.model_replica.load_weights(converted_named_tensors)
 
         converted_named_tensors.clear()
 
     def finish_transfer_task(self) -> None:
-        # Execute transfer for each engine replica.
-        # for transfer_bundle in self.engines.values():
-        #     transfer_bundle.execute()
+        # Execute transfer for each engine replica (only when not using pipelined approach).
+        if not _RDMA_LOAD_TRANSFER_OVERLAP:
+            for transfer_bundle in self.engines.values():
+                transfer_bundle.execute()
 
         # Offload model replicas from memory after transfer (only when RDMA_OFFLOAD_CPU is enabled).
         if _RDMA_OFFLOAD_CPU and not self._is_paused:

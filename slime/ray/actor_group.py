@@ -85,6 +85,13 @@ class RayTrainGroup:
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
             env_vars["RDMA_OFFLOAD_CPU"] = "1"
 
+        # Propagate RDMA_LOAD_TRANSFER_OVERLAP env var for load-transfer pipelining
+        if (
+            self.args.update_weight_transfer_mode == "rdma"
+            and os.environ.get("RDMA_LOAD_TRANSFER_OVERLAP", "0") == "1"
+        ):
+            env_vars["RDMA_LOAD_TRANSFER_OVERLAP"] = "1"
+
         if self.args.use_routing_replay:
             env_vars["ENABLE_ROUTING_REPLAY"] = "1"
 

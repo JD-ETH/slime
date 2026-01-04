@@ -17,6 +17,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout_gpus: int = 1
     # Enable RDMA offload to CPU for model replicas
     use_offload_cpu: bool = False
+    # Enable load-transfer pipelining for RDMA
+    use_load_transfer_overlap: bool = False
     # TODO: Add diverse parallelism settings; imbalance training/inference instances, etc for benchmark.
 
 
@@ -123,6 +125,8 @@ def execute(args: ScriptArgs):
     extra_env_vars = {}
     if args.use_offload_cpu:
         extra_env_vars["RDMA_OFFLOAD_CPU"] = "1"
+    if args.use_load_transfer_overlap:
+        extra_env_vars["RDMA_LOAD_TRANSFER_OVERLAP"] = "1"
 
     U.execute_train(
         train_args=train_args,
