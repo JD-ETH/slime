@@ -5,21 +5,38 @@ import typer
 
 import slime.utils.external_utils.command_utils as U
 
-MODEL_NAME = "Qwen3-4B"
+MODEL_NAME = "Qwen3-4B"  # model wo experts, model w experts, big model like qwen235b
 MODEL_TYPE = "qwen3-4B"
+
+# For h100 80g * 8:
+# training gpu cannot be only 1 because of oom
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["nccl", "rdma"] = "nccl"
-    # Right now tp=ep=pp=1
-    num_train_gpus: int = 1
-    num_rollout_gpus: int = 1
+    # enable single node
+    # tuning training/rollout gpus: --num-train-gpus 2 --training-tp-size 2 --num-rollout-gpus 4 --rollout-tp-size 4
+    # enable different Protocol By: PROTOCOL=NCCL
+    # docker: xinji1/slime_rdma:rdma in condor
+
+    # TODO: Right now ep=pp=1
+
+    num_train_gpus: int = 2  # 1, 2, 4
+    num_rollout_gpus: int = 4  # 1, 2, 4
+    # training/rollout parallel
+    training_tp_size: int = 2  #  1, 2, 4
+    rollout_tp_size: int = 4  #  1, 2, 4
     # Enable RDMA offload to CPU for model replicas
     use_offload_cpu: bool = False
     # Enable load-transfer pipelining for RDMA
     use_load_transfer_overlap: bool = False
-    # TODO: Add diverse parallelism settings; imbalance training/inference instances, etc for benchmark.
+    # TODO: Add diverse parallelism settings; imbalanced training/inference instances, etc for benchmark.
+
+    # TODO:
+    # parallelism: ep, pp
+    # check actor num nodes > 1
+    # better performance
 
 
 def prepare(args: ScriptArgs):
@@ -51,7 +68,7 @@ def execute(args: ScriptArgs):
     )
     # Training parallellism settings
     perf_args = (
-        "--tensor-model-parallel-size 1 "
+        f"--tensor-model-parallel-size {args.training_tp_size} "
         # "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -82,7 +99,7 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {args.rollout_tp_size} "  # basically equal to tp_size in sglang
         f"--rollout-num-gpus {args.num_rollout_gpus} "
         "--sglang-mem-fraction-static 0.8 "
     )
@@ -101,7 +118,7 @@ def execute(args: ScriptArgs):
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 1 "
+        f"--actor-num-gpus-per-node {args.num_train_gpus} "
         # 1GB buffer for weight update
         f"--update-weight-buffer-size {1 * 1024 ** 3} "
         # enable correctness check
