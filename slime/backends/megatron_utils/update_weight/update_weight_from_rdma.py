@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 
@@ -7,8 +8,12 @@ import ray
 import sglang.srt.layers.dp_attention as sglang_dp_attention
 import sglang.srt.server_args as sglang_server_args
 import torch
-from torch_memory_saver import torch_memory_saver
 from mooncake.engine import TransferEngine
+
+# Conditionally import torch_memory_saver based on RDMA_OFFLOAD_CPU env var
+_RDMA_OFFLOAD_CPU = os.environ.get("RDMA_OFFLOAD_CPU", "0") == "1"
+if _RDMA_OFFLOAD_CPU:
+    from torch_memory_saver import torch_memory_saver
 from ray.actor import ActorHandle
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
@@ -49,7 +54,7 @@ class TransferBundle:
 
     def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
         self.remote_weight_infos.append(remote_info)
-    
+
     def execute_each(self, names: Sequence[str]) -> list[int]:
         # FIXME: Execute transfer for updated weight.
         batch_ids = []
@@ -68,7 +73,6 @@ class TransferBundle:
             batch_ids.append(batch_id)
             # logger.info(f"[RDMA] Batch transferred {len(weight_memory_registry)} tensors to session {session_id}.")
         return batch_ids
-       
 
     def execute(self) -> None:
         # Execute transfer for each target session using this replica.
@@ -119,9 +123,10 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             weight_update_mode="rdma",
         )
 
-        # For torch memory saver tagging
-        self.tag = f"Model Replica {self.global_rank}"
-        self._is_paused = False
+        # For torch memory saver tagging (only used when RDMA_OFFLOAD_CPU is enabled)
+        if _RDMA_OFFLOAD_CPU:
+            self.tag = f"Model Replica {self.global_rank}"
+            self._is_paused = False
 
     def connect_rollout_engines(
         self, rollout_engines: Sequence[ActorHandle], rollout_engine_lock: ActorHandle
@@ -164,31 +169,42 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             # Create local model replicas and transfer engines for each target rollout shard
             self.engines = {}
             # Associate transfer tasks based on obtained session and weight info
-            with torch_memory_saver.region(tag=self.tag):
-                for target in targets:
-                    session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
-                    remote_info = RemoteWeightInfo(session_id, self.remote_weight_infos_by_session_id[session_id])
-                    # Instantiate the local model replicas and a corresponding transfer engine with memory registry for each type of rollout shard.
-                    if target.engine_rank not in self.engines:
-                        transfer_engine = self._create_transfer_engine()
-                        model_replica = self._create_inference_replica(
-                            self.args.hf_checkpoint,
-                            pp_shard=target.source_shard,
-                            target_rank=target.engine_rank,
-                            target_tp=self.args.rollout_num_gpus_per_engine,
-                            server_args=self.session_id_to_server_args[session_id],
-                        )
-                        print_memory(f"[RDMA] After model replica at {target.engine_rank}")
-                        weight_memory_registry = self._register_replica_memory(
-                            model_replica, self.remote_weight_infos_by_session_id[session_id], transfer_engine
-                        )
-                        self.engines[target.engine_rank] = TransferBundle(
-                            model_replica, transfer_engine, weight_memory_registry, [remote_info]
-                        )
-                    else:
-                        self.engines[target.engine_rank].add_remote_session(remote_info)
+            self._create_engines_for_targets(targets, targets_to_session_id)
 
             print_memory("[RDMA] After Local Engine Replicas and engine Creation")
+
+    def _create_engines_for_targets(self, targets, targets_to_session_id) -> None:
+        """Helper to create engines, optionally wrapped in torch_memory_saver.region."""
+
+        def _create_engines_impl():
+            for target in targets:
+                session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
+                remote_info = RemoteWeightInfo(session_id, self.remote_weight_infos_by_session_id[session_id])
+                # Instantiate the local model replicas and a corresponding transfer engine with memory registry for each type of rollout shard.
+                if target.engine_rank not in self.engines:
+                    transfer_engine = self._create_transfer_engine()
+                    model_replica = self._create_inference_replica(
+                        self.args.hf_checkpoint,
+                        pp_shard=target.source_shard,
+                        target_rank=target.engine_rank,
+                        target_tp=self.args.rollout_num_gpus_per_engine,
+                        server_args=self.session_id_to_server_args[session_id],
+                    )
+                    print_memory(f"[RDMA] After model replica at {target.engine_rank}")
+                    weight_memory_registry = self._register_replica_memory(
+                        model_replica, self.remote_weight_infos_by_session_id[session_id], transfer_engine
+                    )
+                    self.engines[target.engine_rank] = TransferBundle(
+                        model_replica, transfer_engine, weight_memory_registry, [remote_info]
+                    )
+                else:
+                    self.engines[target.engine_rank].add_remote_session(remote_info)
+
+        if _RDMA_OFFLOAD_CPU:
+            with torch_memory_saver.region(tag=self.tag):
+                _create_engines_impl()
+        else:
+            _create_engines_impl()
 
     def _register_replica_memory(self, model_replica, remote_weight_info, transfer_engine) -> dict:
         to_register_named_tensors = []
@@ -287,14 +303,14 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         # TODO: memory offloading if the replica becomes a bottleneck.
 
         # Load weights into local replica matching the target session, this handles sharding and reshaping.
-        if self._is_paused:
+        if _RDMA_OFFLOAD_CPU and self._is_paused:
             torch_memory_saver.resume(self.tag)
             self._is_paused = False
-        
+
         ret_batch = {}
         for n, transfer_bundle in enumerate(self.engines.values()):
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
-            ret_batch[n] = transfer_bundle.execute_each(updated_name) # FIXME: Do not wait for finish here.
+            ret_batch[n] = transfer_bundle.execute_each(updated_name)  # FIXME: Do not wait for finish here.
 
         # FIXME: Add sync barrier for all transfers to finish.
         for n, batch_ids in ret_batch.items():
@@ -309,8 +325,8 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         # for transfer_bundle in self.engines.values():
         #     transfer_bundle.execute()
 
-        # Offload model replicas from memory after transfer.
-        if not self._is_paused:
+        # Offload model replicas from memory after transfer (only when RDMA_OFFLOAD_CPU is enabled).
+        if _RDMA_OFFLOAD_CPU and not self._is_paused:
             print_memory("[RDMA] Before offloading model replica")
             torch_memory_saver.pause(self.tag)
             self._is_paused = True

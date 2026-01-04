@@ -15,6 +15,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # Right now tp=ep=pp=1
     num_train_gpus: int = 1
     num_rollout_gpus: int = 1
+    # Enable RDMA offload to CPU for model replicas
+    use_offload_cpu: bool = False
     # TODO: Add diverse parallelism settings; imbalance training/inference instances, etc for benchmark.
 
 
@@ -118,12 +120,16 @@ def execute(args: ScriptArgs):
         f"{misc_args} "
     )
 
+    extra_env_vars = {}
+    if args.use_offload_cpu:
+        extra_env_vars["RDMA_OFFLOAD_CPU"] = "1"
+
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=num_gpus,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
-        extra_env_vars={"RAY_DEBUG": "1"},
+        extra_env_vars=extra_env_vars,
     )
 
 

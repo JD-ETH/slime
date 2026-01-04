@@ -71,7 +71,7 @@ class RayTrainGroup:
             env_vars["LD_PRELOAD"] = dynlib_path
             env_vars["TMS_INIT_ENABLE"] = "1"
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
-        elif self.args.update_weight_transfer_mode == "rdma":
+        elif self.args.update_weight_transfer_mode == "rdma" and os.environ.get("RDMA_OFFLOAD_CPU", "0") == "1":
             import torch_memory_saver
 
             dynlib_path = os.path.join(
@@ -83,6 +83,7 @@ class RayTrainGroup:
             env_vars["LD_PRELOAD"] = dynlib_path
             # env_vars["TMS_INIT_ENABLE"] = "1"
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
+            env_vars["RDMA_OFFLOAD_CPU"] = "1"
 
         if self.args.use_routing_replay:
             env_vars["ENABLE_ROUTING_REPLAY"] = "1"

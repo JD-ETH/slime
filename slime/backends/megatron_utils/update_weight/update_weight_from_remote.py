@@ -1,3 +1,4 @@
+import os
 from abc import abstractmethod
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -16,6 +17,9 @@ from slime.utils.timer import timer
 from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, expert_named_params_and_buffers, non_expert_named_params_and_buffers
 from .remote_transfer_plan import RemoteTransferPlan
+
+# Check if RDMA offload to CPU is enabled
+_RDMA_OFFLOAD_CPU = os.environ.get("RDMA_OFFLOAD_CPU", "0") == "1"
 
 
 class UpdateWeightFromRemote:
@@ -44,7 +48,9 @@ class UpdateWeightFromRemote:
         self.weight_version = 0
         self.transfer_plan = RemoteTransferPlan(args, model, weight_update_mode)
         self._is_source = self.transfer_plan.is_source()
-        self.global_rank = dist.get_rank(group=get_gloo_group())
+        # Only set global_rank when RDMA offload to CPU is enabled (needed for torch_memory_saver tagging)
+        if _RDMA_OFFLOAD_CPU:
+            self.global_rank = dist.get_rank(group=get_gloo_group())
 
     @abstractmethod
     def connect_rollout_engines(
