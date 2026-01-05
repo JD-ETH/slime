@@ -27,6 +27,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout_gpus: int = 1
     # Optimizations
     pipelined_transfer: bool = False
+    # Profiling
+    use_pytorch_profiler_update_weight: bool = False
 
     def validate(self):
         assert self.sglang_pp == 1, "Not supported yet for sglang pp"
@@ -152,6 +154,16 @@ def execute(args: ScriptArgs):
     if args.mode == "rdma":
         misc_args += "--update-weight-transfer-mode rdma "
 
+    profile_args = ""
+    extra_env_vars = {}
+    if bool(args.use_pytorch_profiler_update_weight):
+        profile_args += (
+            "--use-pytorch-profiler-update-weight "
+            "--profile-step-start 1 "
+            "--profile-step-end 2 "
+            "--tensorboard-dir /root/profiler_logs/ "
+        )
+
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
@@ -162,6 +174,7 @@ def execute(args: ScriptArgs):
         f"{sglang_args} "
         # f"{ci_args} "
         f"{misc_args} "
+        f"{profile_args} "
     )
 
     U.execute_train(
@@ -169,7 +182,7 @@ def execute(args: ScriptArgs):
         num_gpus_per_node=num_gpus,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
-        # extra_env_vars={"RAY_DEBUG": "1"},
+        extra_env_vars={"RAY_DEBUG": "1", **extra_env_vars},
     )
 
 

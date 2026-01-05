@@ -1050,6 +1050,13 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            parser.add_argument(
+                "--use-pytorch-profiler-update-weight",
+                action="store_true",
+                default=False,
+                help="Enable PyTorch profiler for weight update operations. Requires --tensorboard-dir to be set.",
+            )
+
             return parser
 
         def add_network_arguments(parser):

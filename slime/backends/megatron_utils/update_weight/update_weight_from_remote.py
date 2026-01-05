@@ -16,6 +16,7 @@ from slime.utils.timer import timer
 from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, expert_named_params_and_buffers, non_expert_named_params_and_buffers
 from .remote_transfer_plan import RemoteTransferPlan
+from ....utils.profile_utils import FunctionStepProfiler
 
 
 class UpdateWeightFromRemote:
@@ -45,6 +46,15 @@ class UpdateWeightFromRemote:
         self.transfer_plan = RemoteTransferPlan(args, model, weight_update_mode)
         self._is_source = self.transfer_plan.is_source()
         self.global_rank = dist.get_rank(group=get_gloo_group())
+        self.update_weight_profiler = None
+        self.update_weights_wrapped = None
+        if getattr(args, "use_pytorch_profiler_update_weight", False):
+            self.update_weight_profiler = FunctionStepProfiler(
+                self.args,
+                name="update_weights",
+                label="update_weights"
+            )
+            self.update_weights_wrapped = self.update_weight_profiler.wrap(self.update_weights_implementation)
 
     @abstractmethod
     def connect_rollout_engines(
@@ -63,7 +73,7 @@ class UpdateWeightFromRemote:
         """
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights_implementation(self) -> None:
         """
         For each named parameter in the model, do bucketed weight update by all-gather EP/TP, convert and quantize,
         and relies on underlying implementation to do the transfer.
@@ -80,16 +90,27 @@ class UpdateWeightFromRemote:
             # non-expert weights, then to expert weights.
             non_expert_params_and_buffers = non_expert_named_params_and_buffers(self.args, self.model)
             expert_params_and_buffers = expert_named_params_and_buffers(self.args, self.model)
-            self._update_weights(non_expert_params_and_buffers)
-            dist.barrier(group=get_gloo_group())
-            self._update_expert_weights(expert_params_and_buffers)
-            dist.barrier(group=get_gloo_group())
-            self.finish_transfer_task()
+            with timer("non_expert_transfer"):
+                self._update_weights(non_expert_params_and_buffers)
+                dist.barrier(group=get_gloo_group())
+            with timer("expert_transfer"):
+                self._update_expert_weights(expert_params_and_buffers)
+                dist.barrier(group=get_gloo_group())
+            with timer("final_trans"):
+                self.finish_transfer_task()
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
             self.leader_post_update()
         dist.barrier(group=get_gloo_group())
+
+    @torch.no_grad()
+    def update_weights(self) -> None:
+        if self.update_weights_wrapped is not None:
+            self.update_weights_wrapped()
+            # Don't call stop() here - let profiler accumulate steps across multiple calls
+        else:
+            self.update_weights_implementation()
 
     def leader_post_update(self) -> None:
         ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
