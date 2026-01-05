@@ -88,7 +88,8 @@ class FunctionStepProfiler:
     Uses torch.profiler.profile with CUDA activities to capture kernel-level
     details and Python-to-CUDA correlation.
     """
-    def __init__(self, args, name: str, label: str = "target_fn"):
+
+    def __init__(self, args, name: str, label: str = "target_fn", start: int = 0, end: int = 1):
         self.args = args
         self.name = name
         self.label = label
@@ -96,13 +97,16 @@ class FunctionStepProfiler:
         self.enabled = True
         self.output_dir = Path(args.tensorboard_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.start = start
+        self.end = end
 
     def wrap(self, fn):
         def _wrapped(*args, **kwargs):
             if not self.enabled:
                 return fn(*args, **kwargs)
-
             self.call_count += 1
+            if not (self.start <= self.call_count < self.end):
+                return fn(*args, **kwargs)
             logger.info(f"FunctionStepProfiler: Profiling call {self.call_count} for '{self.label}'")
 
             try:
@@ -127,19 +131,21 @@ class FunctionStepProfiler:
                 # Export the trace to a gzipped file
                 rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
                 trace_file = self.output_dir / f"{self.name}_call{self.call_count}_rank_{rank}.pt.trace.json.gz"
-                with tempfile.NamedTemporaryFile(suffix='.json', delete=True) as tmp:
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=True) as tmp:
                     prof.export_chrome_trace(tmp.name)
-                    with open(tmp.name, 'rb') as f_in, gzip.open(trace_file, 'wb') as f_out:
+                    with open(tmp.name, "rb") as f_in, gzip.open(trace_file, "wb") as f_out:
                         f_out.write(f_in.read())
                 logger.info(f"FunctionStepProfiler: Call {self.call_count} profiled, trace saved to {trace_file}")
                 return result
             except Exception as e:
                 logger.warning(f"FunctionStepProfiler: Profiler error for '{self.label}', disabling: {e}")
                 import traceback
+
                 traceback.print_exc()
                 self.enabled = False
                 # Run without profiling
                 return fn(*args, **kwargs)
+
         return _wrapped
 
     def stop(self):

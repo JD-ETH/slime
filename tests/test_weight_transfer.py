@@ -154,12 +154,11 @@ def execute(args: ScriptArgs):
         misc_args += "--update-weight-transfer-mode rdma "
 
     profile_args = ""
-    extra_env_vars = {}
     if bool(args.use_pytorch_profiler_update_weight):
         profile_args += (
             "--use-pytorch-profiler-update-weight "
-            "--profile-step-start 1 "
-            "--profile-step-end 2 "
+            "--profile-update-weight-start 2 "
+            "--profile-update-weight-end 3 "
             "--tensorboard-dir /root/profiler_logs/ "
         )
 
@@ -181,7 +180,7 @@ def execute(args: ScriptArgs):
         num_gpus_per_node=num_gpus,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
-        extra_env_vars={"RAY_DEBUG": "1", **extra_env_vars},
+        # extra_env_vars={"RAY_DEBUG": "1"},
     )
 
 
