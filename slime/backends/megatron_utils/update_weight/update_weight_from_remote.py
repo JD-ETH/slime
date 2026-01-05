@@ -80,11 +80,14 @@ class UpdateWeightFromRemote:
             # non-expert weights, then to expert weights.
             non_expert_params_and_buffers = non_expert_named_params_and_buffers(self.args, self.model)
             expert_params_and_buffers = expert_named_params_and_buffers(self.args, self.model)
-            self._update_weights(non_expert_params_and_buffers)
-            dist.barrier(group=get_gloo_group())
-            self._update_expert_weights(expert_params_and_buffers)
-            dist.barrier(group=get_gloo_group())
-            self.finish_transfer_task()
+            with timer("non_expert_transfer"):
+                self._update_weights(non_expert_params_and_buffers)
+                dist.barrier(group=get_gloo_group())
+            with timer("expert_transfer"):
+                self._update_expert_weights(expert_params_and_buffers)
+                dist.barrier(group=get_gloo_group())
+            with timer("final_trans"):
+                self.finish_transfer_task()
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
