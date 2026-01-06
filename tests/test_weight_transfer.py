@@ -4,6 +4,7 @@ from typing import Literal
 import typer
 
 import slime.utils.external_utils.command_utils as U
+from slime.utils.profile_utils import merge_traces
 from slime.utils.timer import log_experiment_start
 
 MODEL_NAME = "Qwen3-4B"
@@ -153,14 +154,12 @@ def execute(args: ScriptArgs):
     if args.mode == "rdma":
         misc_args += "--update-weight-transfer-mode rdma "
 
-    profile_args = ""
-    if bool(args.use_pytorch_profiler_update_weight):
-        profile_args += (
-            "--use-pytorch-profiler-update-weight "
-            "--profile-update-weight-start 2 "
-            "--profile-update-weight-end 3 "
-            "--tensorboard-dir /root/profiler_logs/ "
-        )
+    profile_args = (
+        "--use-pytorch-profiler-update-weight "
+        "--profile-update-weight-start 0 "
+        "--profile-update-weight-end 6 "
+        "--tensorboard-dir /root/profiler_logs/ "
+    )
 
     train_args = (
         f"{ckpt_args} "
@@ -182,6 +181,7 @@ def execute(args: ScriptArgs):
         train_script="train_async.py",
         # extra_env_vars={"RAY_DEBUG": "1"},
     )
+    merge_traces(name="update_weights", call_end=5, rank=0, output_dir="/root/profiler_logs/")
 
 
 @U.dataclass_cli

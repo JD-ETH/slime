@@ -1,4 +1,5 @@
 import gzip
+import json
 import logging
 import tempfile
 import time
@@ -111,9 +112,8 @@ class FunctionStepProfiler:
 
             try:
                 # Determine activities based on CUDA availability
-                activities = [torch.profiler.ProfilerActivity.CPU]
-                if torch.cuda.is_available():
-                    activities.append(torch.profiler.ProfilerActivity.CUDA)
+                assert torch.cuda.is_available(), "CUDA must be available for FunctionStepProfiler"
+                activities = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
 
                 # Use torch.profiler.profile for proper CUDA kernel profiling
                 with torch.profiler.profile(
@@ -125,8 +125,7 @@ class FunctionStepProfiler:
                 ) as prof:
                     with record_function(self.label):
                         result = fn(*args, **kwargs)
-                        if torch.cuda.is_available():
-                            torch.cuda.synchronize()
+                        torch.cuda.synchronize()
 
                 # Export the trace to a gzipped file
                 rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
@@ -138,19 +137,21 @@ class FunctionStepProfiler:
                 logger.info(f"FunctionStepProfiler: Call {self.call_count} profiled, trace saved to {trace_file}")
                 return result
             except Exception as e:
-                logger.warning(f"FunctionStepProfiler: Profiler error for '{self.label}', disabling: {e}")
-                import traceback
-
-                traceback.print_exc()
-                self.enabled = False
-                # Run without profiling
-                return fn(*args, **kwargs)
+                raise ValueError(f"FunctionStepProfiler: Profiler error for '{self.label}', details: {e}") from e
 
         return _wrapped
 
-    def stop(self):
-        # No-op - profiler is managed per-call
-        pass
+
+def merge_traces(name="update_weights", call_end=5, rank=0, output_dir="/root/profiler_logs/"):
+    merged = {"traceEvents": []}
+    output_file = Path(output_dir) / f"merged_{name}_rank_{rank}_merged.pt.trace.json.gz"
+    for call_iter in range(1, call_end):
+        f = Path(output_dir) / f"{name}_call{call_iter}_rank_{rank}.pt.trace.json.gz"
+        with gzip.open(f, "rt") as fp:
+            data = json.load(fp)
+            merged["traceEvents"].extend(data.get("traceEvents", []))
+    with gzip.open(output_file, "wt") as fp:
+        json.dump(merged, fp)
 
 
 class _BaseMemoryProfiler:
