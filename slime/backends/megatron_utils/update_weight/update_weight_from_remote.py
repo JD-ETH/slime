@@ -206,15 +206,13 @@ class UpdateWeightFromRemote:
             for handle in handles:
                 handle.wait()
 
-            named_tensors.clear()
-            if not self._is_source:
-                return
+        named_tensors.clear()
+        if not self._is_source:
+            return
 
-            all_gathered_params = sum(all_gathered_params, [])
-            converted_hf_tensors = []
-            for name, param in all_gathered_params:
-                converted_hf_tensors += convert_to_hf(
-                    self.args, self.model_name, name, param, self.quantization_config
-                )
+        all_gathered_params = sum(all_gathered_params, [])
+        converted_hf_tensors = []
+        for name, param in all_gathered_params:
+            converted_hf_tensors += convert_to_hf(self.args, self.model_name, name, param, self.quantization_config)
 
         self._update_bucket_weights_from_remote(converted_hf_tensors, pbar)
