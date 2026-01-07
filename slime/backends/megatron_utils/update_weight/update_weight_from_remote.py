@@ -14,7 +14,6 @@ from slime.utils.distributed_utils import get_gloo_group
 from slime.utils.profile_utils import FunctionStepProfiler
 from slime.utils.timer import timer
 
-from ....utils.profile_utils import FunctionStepProfiler
 from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, expert_named_params_and_buffers, non_expert_named_params_and_buffers
 from .remote_transfer_plan import RemoteTransferPlan
