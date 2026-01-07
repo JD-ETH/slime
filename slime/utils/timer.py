@@ -32,10 +32,11 @@ class Timer(metaclass=SingletonMeta):
         self.add(name, elapsed_time)
         del self.start_time[name]
         rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-        if log_info and rank == 0:
-            logger.info(f"Timer {name} end (elapsed: {elapsed_time:.1f}s)")
-        with open(f"{LOGFILE}_{rank}.log", "a") as f:
-            f.write(f"Timer {name} end (elapsed: {elapsed_time*1000:.3f}ms)\n")
+        if rank == 0:
+            if log_info:
+                logger.info(f"Timer {name} end (elapsed: {elapsed_time:.1f}s)")
+            with open(f"{LOGFILE}_{rank}.log", "a") as f:
+                f.write(f"Timer {name} end (elapsed: {elapsed_time*1000:.3f}ms)\n")
 
     def reset(self, name=None):
         if name is None:
