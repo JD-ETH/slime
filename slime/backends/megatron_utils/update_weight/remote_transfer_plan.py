@@ -85,12 +85,24 @@ class RemoteTransferPlan:
         self._rollout_tp_size = args.sglang_tp_size
         self._rollout_dp_size = args.sglang_dp_size
         self._rollout_ep_size = args.sglang_ep_size
+        self._rollout_attn_tp_size = self._rollout_tp_size // self._rollout_dp_size
+        self._rollout_moe_tp_size = self._rollout_tp_size // self._rollout_ep_size
+
         # EP and PP sizes are not tested and likely miss functionalities.
         self._rollout_pp_size = args.sglang_pp_size
         if self._rollout_ep_size != 1 or self._rollout_pp_size != 1:
             raise NotImplementedError("Rollout expert and pipeline parallelisms are not supported yet.")
-        self._num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
-        self._rollout_engine_count = args.rollout_num_gpus // self._num_gpu_per_engine
+        # self._num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
+
+        # NOTE: here we need to use the `args.rollout_num_gpus_per_engine` instead of
+        # `min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)` as the _num_gpu_per_engine
+
+        # The reason is that for multi-node scenarios, the target ranks of nodes where the node_rank > 1
+        # should be taken as the parts of one complete rollout engine, and the target_rank should be larger
+        # than ` args.num_gpus_per_node`.
+
+        self._rollout_num_gpu_per_engine = args.rollout_num_gpus_per_engine
+        self._rollout_engine_count = args.rollout_num_gpus // self._rollout_num_gpu_per_engine
         self._rollout_num_gpus = args.rollout_num_gpus
         logger.info(
             f"RemoteTransferPlan initialized: mode={self.mode}, pp_rank={self._pp_rank}/{self._pp_size}, tp_rank={self._tp_rank}/{self._tp_size}, "
@@ -148,7 +160,9 @@ class RemoteTransferPlan:
         """
 
         all_targets = [
-            (m_idx, k_idx) for m_idx in range(self._rollout_engine_count) for k_idx in range(self._num_gpu_per_engine)
+            (m_idx, k_idx)
+            for m_idx in range(self._rollout_engine_count)
+            for k_idx in range(self._rollout_num_gpu_per_engine)
         ]
         # Assignments: source_rank -> {engin_rank: [engine_indices]}
         assignements = defaultdict(lambda: defaultdict(list))
@@ -190,6 +204,20 @@ class RemoteTransferPlan:
                     TransferTaskP2PMeta(source_shard=self._pp_rank, engine_ind=engine_ind, engine_rank=engine_rank)
                 )
         return transfer_tasks
+
+    def tp_conversion(self, targeted_tp_rank: int) -> dict[str, int]:
+        """
+        Given tp_rank, return the rank of attn_tp/dp/ep/moe-tp.
+        """
+        parallel_rank_dict = {}
+        # attn_tp/dp
+        # NOTE: iiuc, in sglang, _num_gpu_per_engine == targeted_tp_size?
+        parallel_rank_dict["attn_tp_rank"] = targeted_tp_rank % self._rollout_attn_tp_size
+        parallel_rank_dict["dp_rank"] = targeted_tp_rank // self._rollout_attn_tp_size
+        # moe-tp/ep
+        parallel_rank_dict["moe_tp_rank"] = targeted_tp_rank % self._rollout_moe_tp_size
+        parallel_rank_dict["ep_rank"] = targeted_tp_rank // self._rollout_moe_tp_size
+        return parallel_rank_dict
 
     def is_source(self) -> bool:
         """

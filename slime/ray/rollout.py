@@ -1,3 +1,4 @@
+import json
 import logging
 import multiprocessing
 import os
@@ -398,6 +399,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
 
 
 def _allocate_rollout_engine_addr_and_ports_external(args, rollout_engines):
+    # TODO: add bonus address setting for rdma weight transfer
     addr_and_ports = []
     for rank, _ in rollout_engines:
         [host, port] = args.rollout_external_engine_addrs[rank].split(":")
@@ -422,16 +424,12 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
     num_engines_per_node = max(
         1, min(args.num_gpus_per_node, args.rollout_num_gpus) // args.rollout_num_gpus_per_engine
     )
+    nnodes = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
     addr_and_ports = [{} for _ in range(num_engines)]
 
     visited_nodes = set()
+    all_server_node_hosts = {}  # {server_id: {node_rank:address}  }, server_id = rank // num_engines_per_node
     for rank, engine in rollout_engines:
-        if rank // num_engines_per_node in visited_nodes:
-            continue
-        visited_nodes.add(rank // num_engines_per_node)
-        # TODO: currently when restarting engines, we will set port for all engines on this node starting with this rank.
-        # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
-        num_engines_on_this_node = num_engines_per_node - (rank % num_engines_per_node)
 
         def get_addr_and_ports(engine):
             # use small ports to prevent ephemeral port between 32768 and 65536.
@@ -457,6 +455,24 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
 
         get_addr, get_port = get_addr_and_ports(engine)
 
+        # add node_rank and address into the dict for multi-node scenarios
+        if nnodes > 1:
+            server_id = rank // nnodes
+            all_server_node_hosts[server_id] = all_server_node_hosts.get(server_id, {})
+            node_rank = rank % nnodes
+            assert (
+                node_rank not in all_server_node_hosts[server_id]
+            ), f"Duplicate node rank {node_rank} for server {server_id}"
+            all_server_node_hosts[server_id][node_rank] = get_addr()
+
+        engine_id = rank // num_engines_per_node
+        if engine_id in visited_nodes:
+            continue
+        visited_nodes.add(engine_id)
+        # TODO: currently when restarting engines, we will set port for all engines on this node starting with this rank.
+        # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
+        num_engines_on_this_node = num_engines_per_node - (rank % num_engines_per_node)
+
         for i in range(num_engines_on_this_node):
             addr_and_ports[rank + i]["host"] = get_addr()
             addr_and_ports[rank + i]["port"] = get_port()
@@ -473,7 +489,16 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
             for i in range(num_engines_on_this_node):
                 addr_and_ports[rank + i]["dist_init_addr"] = f"{get_addr()}:{get_port(6 + args.sglang_dp_size)}"
 
+    node_host_addr_str = {}
+    if nnodes > 1:
+        for server_id, node_rank_addr_dict in all_server_node_hosts.items():
+            assert len(node_rank_addr_dict) == nnodes, f"server {server_id} missing node address {node_rank_addr_dict}"
+            node_host_addr_str[server_id] = json.dumps(node_rank_addr_dict)
+
     for i, _ in rollout_engines:
+        if nnodes > 1:
+            server_id = i // nnodes
+            addr_and_ports[i]["node_hosts"] = node_host_addr_str[server_id]
         for key in ["port", "nccl_port", "dist_init_addr"]:
             assert key in addr_and_ports[i], f"Engine {i} {key} is not set."
         logger.info(f"Ports for engine {i}: {addr_and_ports[i]}")

@@ -39,6 +39,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     head_node_ip: str | None = None
     node_rank: int = 0
     nnodes: int = 1
+    inter_node_transfer_engine_info_port: int = 15500  # TODO: initialize this port from ray.
 
     def validate(self):
         if self.multinode:
@@ -165,6 +166,7 @@ def execute(args: ScriptArgs):
         f"--sglang-expert-parallel-size {args.sglang_ep} "
         f"--sglang-pipeline-parallel-size {args.sglang_pp} "
         "--sglang-mem-fraction-static 0.8 "
+        f"--sglang-inter-node-transfer-engine-info-port {args.inter_node_transfer_engine_info_port} "
     )
     if args.mode == "rdma":
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
