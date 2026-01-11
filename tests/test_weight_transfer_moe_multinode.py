@@ -22,8 +22,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_tp: int = 8
     train_ep: int = 1
     train_pp: int = 1
+    train_cp: int = 1
     train_etp: int = 8
-    sglang_tp: int = 8
+    sglang_tp: int = 8  # NOTE: for sglang, moe_tp_size = tp_size // ep_size
     sglang_dp: int = 1
     sglang_ep: int = 1
     sglang_pp: int = 1
@@ -40,6 +41,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     node_rank: int = 0
     nnodes: int = 1
     inter_node_transfer_engine_info_port: int = 15500  # TODO: initialize this port from ray.
+    decoder_last_pipeline_num_layers: int | None = None
 
     def validate(self):
         if self.multinode:
@@ -73,6 +75,7 @@ def prepare(args: ScriptArgs):
             nnodes=args.nnodes,
             dir_dst="/root/multinode",
             node_rank=args.node_rank,
+            decoder_last_pipeline_num_layers=args.decoder_last_pipeline_num_layers,
         )
 
 
@@ -128,17 +131,18 @@ def execute(args: ScriptArgs):
     perf_args = (
         f"--tensor-model-parallel-size {args.train_tp} "
         "--sequence-parallel "  # NOTE: necessary: ```ValueError: During training, performance may degrade if MoE and tensor parallelismare enabled without also enabling sequence parallelism.```
-        # f"--context-parallel-size {args.train_cp} "
+        f"--context-parallel-size {args.train_cp} "
         f"--pipeline-model-parallel-size {args.train_pp} "
         f"--expert-model-parallel-size {args.train_ep} "
         f"--expert-tensor-parallel-size {args.train_etp} "
-        "--context-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 2048 "
     )
+    if args.decoder_last_pipeline_num_layers is not None:
+        perf_args += f"--decoder-last-pipeline-num-layers {args.decoder_last_pipeline_num_layers} "
 
     grpo_args = (
         "--advantage-estimator gspo "

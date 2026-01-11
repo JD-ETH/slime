@@ -80,6 +80,7 @@ class RemoteTransferPlan:
         self._dp_rank, self._dp_size = mpu.get_data_parallel_rank(
             with_context_parallel=True
         ), mpu.get_data_parallel_world_size(with_context_parallel=True)
+        self._edp_rank, self._edp_size = mpu.get_expert_data_parallel_rank(), mpu.get_expert_data_parallel_world_size()
 
         # Gather the target (rollout engine count and parallelism) information.
         self._rollout_tp_size = args.sglang_tp_size
@@ -90,7 +91,7 @@ class RemoteTransferPlan:
 
         # EP and PP sizes are not tested and likely miss functionalities.
         self._rollout_pp_size = args.sglang_pp_size
-        if self._rollout_ep_size != 1 or self._rollout_pp_size != 1:
+        if self._rollout_pp_size != 1:
             raise NotImplementedError("Rollout expert and pipeline parallelisms are not supported yet.")
         # self._num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
 
@@ -112,13 +113,31 @@ class RemoteTransferPlan:
             f"Rollout engine count: {self._rollout_engine_count}, tp_size={self._rollout_tp_size}, ep_size={self._rollout_ep_size}, dp_size={self._rollout_dp_size}"
         )
 
+        # Calculate the non-expert dp/ expert dp from training side
+        # Reference: `Megatron-LM/megatron/core/parallel_state.py`
+
+        # NOTE:
+        # For Megatron (training_side), `world_size = non_expert_dp_size_with_cp * tp_size * pp_size `
+        # and `world_size = expert_dp_size * ep_size * expert_tp_size * pp_size`
+        # Then for non_expert part and each pp_rank,
+        # the number of "tp_groups" are `non_expert_dp_size_with_cp`
+        # then after all-gather in tp dimension,  each gpu of `non_expert_dp_size_with_cp` * `tp_size` will have the full weights of this pp_rank
+
+        # Then for expert part and each pp_rank,
+        # after tp_all_gather and ep_all_gather, each gpu of `expert_dp_size` * `expert_tp_size` * `ep_size` will have the full weights of this pp_rank
+
+        # Since `world_size // pp_size` = `non_expert_dp_size_with_cp` * `tp_size` = `expert_dp_size` * `expert_tp_size` * `ep_size`
+        # For each gpu of same pp_rank, it has the full weights of the whole model.
+
+        # Non_expert part
         self._gathered_dp_size = self._dp_size * self._tp_size
         self._gathered_dp_rank = self._dp_rank * self._tp_size + self._tp_rank
         # TODO: If I understand correctly the final size should be same as we now only have pp - dp dimensions for both param groups?
+
         expert_tp_size = self._ep_size * self._etp_size
-        self._gathered_expert_dp_size = self._dp_size * expert_tp_size
+        self._gathered_expert_dp_size = self._edp_size * expert_tp_size
         self._gathered_expert_dp_rank = (
-            self._dp_rank * expert_tp_size + self._ep_rank * self._etp_size + self._etp_rank
+            self._edp_rank * expert_tp_size + self._ep_rank * self._etp_size + self._etp_rank
         )
         logger.info(
             f"Gathered dp_size={self._gathered_dp_size}, gathered expert dp_size={self._gathered_expert_dp_size}"
@@ -128,6 +147,7 @@ class RemoteTransferPlan:
         )
 
         self._rank = self._gathered_dp_rank
+        self._size = self._gathered_dp_size
 
     def get_nccl_group(self) -> str:
         """
@@ -168,13 +188,13 @@ class RemoteTransferPlan:
         assignements = defaultdict(lambda: defaultdict(list))
         # First round robin assignment
         i = -1
-        for source_rank, (idx, target) in zip(range(self._gathered_dp_size), enumerate(all_targets), strict=False):
+        for source_rank, (idx, target) in zip(range(self._size), enumerate(all_targets), strict=False):
             i = idx
             m_idx, k_idx = target
             assignements[source_rank][k_idx].append(m_idx)
 
         def count_engine_index_assignments(k_idx: int) -> int:
-            return [len(assignements[source][k_idx]) for source in range(self._gathered_dp_size)]
+            return [len(assignements[source][k_idx]) for source in range(self._size)]
 
         # Reminder assignment by least_assigned_source
         cur_source_index = 0
@@ -188,7 +208,7 @@ class RemoteTransferPlan:
                     _, select_source = min((val, idx) for (idx, val) in enumerate(counted) if val > 0)
                 # Else go back to round robin.
                 else:
-                    select_source = cur_source_index % self._gathered_dp_size
+                    select_source = cur_source_index % self._size
                     cur_source_index += 1
                 assignements[select_source][k_idx].append(m_idx)
 
