@@ -93,15 +93,6 @@ class RemoteTransferPlan:
         self._rollout_pp_size = args.sglang_pp_size
         if self._rollout_pp_size != 1:
             raise NotImplementedError("Rollout expert and pipeline parallelisms are not supported yet.")
-        # self._num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
-
-        # NOTE: here we need to use the `args.rollout_num_gpus_per_engine` instead of
-        # `min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)` as the _num_gpu_per_engine
-
-        # The reason is that for multi-node scenarios, the target ranks of nodes where the node_rank > 1
-        # should be taken as the parts of one complete rollout engine, and the target_rank should be larger
-        # than ` args.num_gpus_per_node`.
-
         self._rollout_num_gpu_per_engine = args.rollout_num_gpus_per_engine
         self._rollout_engine_count = args.rollout_num_gpus // self._rollout_num_gpu_per_engine
         self._rollout_num_gpus = args.rollout_num_gpus
@@ -112,28 +103,11 @@ class RemoteTransferPlan:
         logger.info(
             f"Rollout engine count: {self._rollout_engine_count}, tp_size={self._rollout_tp_size}, ep_size={self._rollout_ep_size}, dp_size={self._rollout_dp_size}"
         )
-
         # Calculate the non-expert dp/ expert dp from training side
         # Reference: `Megatron-LM/megatron/core/parallel_state.py`
 
-        # NOTE:
-        # For Megatron (training_side), `world_size = non_expert_dp_size_with_cp * tp_size * pp_size `
-        # and `world_size = expert_dp_size * ep_size * expert_tp_size * pp_size`
-        # Then for non_expert part and each pp_rank,
-        # the number of "tp_groups" are `non_expert_dp_size_with_cp`
-        # then after all-gather in tp dimension,  each gpu of `non_expert_dp_size_with_cp` * `tp_size` will have the full weights of this pp_rank
-
-        # Then for expert part and each pp_rank,
-        # after tp_all_gather and ep_all_gather, each gpu of `expert_dp_size` * `expert_tp_size` * `ep_size` will have the full weights of this pp_rank
-
-        # Since `world_size // pp_size` = `non_expert_dp_size_with_cp` * `tp_size` = `expert_dp_size` * `expert_tp_size` * `ep_size`
-        # For each gpu of same pp_rank, it has the full weights of the whole model.
-
-        # Non_expert part
         self._gathered_dp_size = self._dp_size * self._tp_size
         self._gathered_dp_rank = self._dp_rank * self._tp_size + self._tp_rank
-        # TODO: If I understand correctly the final size should be same as we now only have pp - dp dimensions for both param groups?
-
         expert_tp_size = self._ep_size * self._etp_size
         self._gathered_expert_dp_size = self._edp_size * expert_tp_size
         self._gathered_expert_dp_rank = (

@@ -171,7 +171,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                     # TODO verify:
                     # - if sglang dp is enabled, then attn_tp is equal to tp // dp
                     # - if sglang ep is enabled, then moe-tp is equal to tp // ep
-                    # generally tp should be equal to the world_size
+                    # generally tp * pp should be equal to the world_size
                     if target.engine_rank not in self.engines:
                         transfer_engine = self._create_transfer_engine()
                         parallel_rank_dict = self.transfer_plan.tp_conversion(target.engine_rank)
@@ -181,7 +181,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                         model_replica = self._create_inference_replica(
                             self.args.hf_checkpoint,
                             pp_shard=target.source_shard,
-                            target_rank=target.engine_rank,  # NOTE: here we assume that sglang_tp == world_size
+                            target_rank=target.engine_rank,  # NOTE: here we assume that sglang_tp == world_size when pp_size == 1
                             target_tp=self.args.rollout_num_gpus_per_engine,
                             dp_rank=parallel_rank_dict["dp_rank"],
                             dp_size=self.transfer_plan._rollout_dp_size,
@@ -433,7 +433,9 @@ class MockSglangDistributedContext:
                 "sglang.srt.distributed.parallel_state.get_moe_tensor_parallel_world_size",
                 return_value=self.moe_tp_size,
             ),
-            patch("sglang.srt.distributed.get_pp_group", return_value=mock_pp_group),
+            patch(
+                "sglang.srt.distributed.get_pp_group", return_value=mock_pp_group
+            ),  # TODO: redundant. Delete pp group setting in the future
             patch("sglang.srt.distributed.get_moe_tp_group", return_value=mock_moe_tp_group),
             patch("sglang.srt.distributed.get_tp_group", return_value=mock_group),
             patch("sglang.srt.distributed.get_moe_expert_parallel_rank", return_value=self.ep_rank),
