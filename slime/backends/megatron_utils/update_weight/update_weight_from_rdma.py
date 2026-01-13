@@ -413,8 +413,8 @@ class MockSglangDistributedContext:
         sglang_server_args._global_server_args = self.server_args
         sglang_dp_attention._ATTN_TP_RANK = self.attn_tp_rank
         sglang_dp_attention._ATTN_TP_SIZE = self.attn_tp_size
-        sglang_dp_attention._ATTN_DP_RANK = 0
-        sglang_dp_attention._ATTN_DP_SIZE = 1
+        sglang_dp_attention._ATTN_DP_RANK = self.dp_rank
+        sglang_dp_attention._ATTN_DP_SIZE = self.dp_size
 
         # Mock parallelism getters
         # IMPORTANT: We need to patch functions at BOTH locations:
