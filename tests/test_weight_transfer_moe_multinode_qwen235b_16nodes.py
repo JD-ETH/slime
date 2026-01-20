@@ -39,7 +39,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     multinode: bool = True
     head_node_ip: str | None = None
     node_rank: int = 0
-    nnodes: int = 16
+    nnodes: int = 8
     inter_node_transfer_engine_info_port: int = 15500  # TODO: initialize this port from ray.
     decoder_last_pipeline_num_layers: int = 22
 
@@ -109,9 +109,9 @@ def execute(args: ScriptArgs):
         num_gpus_per_node = 8
         ckpt_args = (
             f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
-            f"--ref-load /root/multinode/{MODEL_NAME}_torch_dist_nodes_{args.nnodes} "
-            f"--load /root/multinode/{MODEL_NAME}_slime_nodes_{args.nnodes}/ "
-            f"--save /root/multinode/{MODEL_NAME}_slime_nodes_{args.nnodes}/ "
+            f"--ref-load /root/multinode/{MODEL_NAME}_torch_dist/ "
+            f"--load /root/multinode/{MODEL_NAME}_slime_nodes/ "
+            f"--save /root/multinode/{MODEL_NAME}_slime_nodes/ "
             "--save-interval 20 "
         )
     else:
