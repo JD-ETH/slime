@@ -29,8 +29,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     sglang_ep: int = 32
     sglang_pp: int = 1
     # Total Ressources
-    num_train_gpus: int = 8 * GPUS_PER_NODE  # 8 nodes * 8 GPUs
-    num_rollout_gpus: int = 64  # 8 nodes * 8 GPUs for rollout
+    num_train_gpus: int = 4 * GPUS_PER_NODE  # 8 nodes * 8 GPUs
+    num_rollout_gpus: int = 32  # 8 nodes * 8 GPUs for rollout
     # Optimizations
     pipelined_transfer: bool = False
     # Profiling
