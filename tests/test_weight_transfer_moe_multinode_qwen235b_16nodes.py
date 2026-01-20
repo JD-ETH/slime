@@ -215,7 +215,7 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
-        f"--actor-num-nodes {args.nnodes} "
+        f"--actor-num-nodes {args.num_train_gpus // GPUS_PER_NODE} "
         f"--actor-num-gpus-per-node {GPUS_PER_NODE} "
         # 4GB buffer for weight update
         f"--update-weight-buffer-size {4 * 1024 * 1024 * 1024} "
