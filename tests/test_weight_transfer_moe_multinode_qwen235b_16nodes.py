@@ -59,7 +59,8 @@ def prepare(args: ScriptArgs):
             "hf download Qwen/Qwen3-235B-A22B-Instruct-2507 --local-dir /root/models/Qwen3-235B-A22B-Instruct-2507"
         )
         U.hf_download_dataset("zhuzilin/dapo-math-17k")
-        U.hf_download_dataset("aime-2024")
+        U.hf_download_dataset("zhuzilin/aime-2024")
+        # hf download --repo-type dataset zhuzilin/aime-2024
     num_gpus = args.num_train_gpus + args.num_rollout_gpus
     if not args.multinode:
         U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=num_gpus)
