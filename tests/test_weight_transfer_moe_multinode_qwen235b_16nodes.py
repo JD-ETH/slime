@@ -195,8 +195,8 @@ def execute(args: ScriptArgs):
         f"--sglang-ep-size {args.sglang_ep} "
         "--sglang-enable-dp-lm-head "
         "--sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256 "
-        "--sglang-moe-a2a-backend deepep "
-        "--sglang-deepep-mode auto "
+        # "--sglang-moe-a2a-backend deepep "
+        # "--sglang-deepep-mode auto "
         f"--sglang-inter-node-transfer-engine-info-port {args.inter_node_transfer_engine_info_port} "
     )
     if args.mode == "rdma":
