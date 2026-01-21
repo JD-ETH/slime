@@ -450,16 +450,19 @@ class MockSglangDistributedContext:
             patch("sglang.srt.layers.dp_attention.get_attention_tp_rank", return_value=self.attn_tp_rank),
             patch("sglang.srt.layers.dp_attention.get_attention_tp_size", return_value=self.attn_tp_size),
             patch("sglang.srt.layers.dp_attention.get_attention_tp_group", return_value=mock_attn_tp_group),
+            patch("sglang.srt.layers.dp_attention.is_dp_attention_enabled", return_value=self.server_args.enable_dp_attention),
             # Patch at import locations in model files - these are critical!
             patch("sglang.srt.models.qwen3.get_attention_tp_rank", return_value=self.attn_tp_rank),
             patch("sglang.srt.models.qwen3.get_attention_tp_size", return_value=self.attn_tp_size),
             patch("sglang.srt.models.qwen3.get_pp_group", return_value=mock_pp_group),
+            patch("sglang.srt.models.qwen2.is_dp_attention_enabled", return_value=self.server_args.enable_dp_attention),
             # Patch at import locations in DeepSeek V2 model
             patch("sglang.srt.models.deepseek_v2.get_attention_tp_rank", return_value=self.attn_tp_rank),
             patch("sglang.srt.models.deepseek_v2.get_attention_tp_size", return_value=self.attn_tp_size),
             patch("sglang.srt.models.deepseek_v2.get_tensor_model_parallel_world_size", return_value=self.tp_size),
             patch("sglang.srt.models.deepseek_v2.get_pp_group", return_value=mock_pp_group),
             patch("sglang.srt.models.deepseek_v2.get_moe_expert_parallel_world_size", return_value=self.ep_size),
+            patch("sglang.srt.models.deepseek_v2.is_dp_attention_enabled", return_value=self.server_args.enable_dp_attention),
             # Patch moe layers
             patch(
                 "sglang.srt.layers.moe.fused_moe_triton.layer.get_moe_expert_parallel_rank", return_value=self.ep_rank

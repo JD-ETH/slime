@@ -172,6 +172,8 @@ def execute(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.8 "
         f"--sglang-inter-node-transfer-engine-info-port {args.inter_node_transfer_engine_info_port} "
     )
+    if args.sglang_dp > 1:
+        sglang_args += "--sglang-enable-dp-attention "
     if args.mode == "rdma":
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     if args.pipelined_transfer and args.mode == "rdma":
