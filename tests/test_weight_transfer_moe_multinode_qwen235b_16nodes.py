@@ -9,7 +9,7 @@ from slime.utils.timer import log_experiment_start
 
 MODEL_NAME = "Qwen3-235B-A22B-Instruct-2507"
 MODEL_TYPE = "qwen3-235B-A22B"
-
+import time
 GPUS_PER_NODE = 8
 # For h100 80g * 8:
 # training gpu cannot be only 1 because of oom
@@ -83,6 +83,7 @@ def prepare(args: ScriptArgs):
 
 def execute(args: ScriptArgs):
     # Log experiment configuration at the start
+    
     log_experiment_start(
         {
             "mode": args.mode,
@@ -247,7 +248,8 @@ def execute(args: ScriptArgs):
         f"{misc_args} "
         f"{profile_args} "
     )
-
+    if args.node_rank > 0:
+        time.sleep(10)
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=num_gpus_per_node,
