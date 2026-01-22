@@ -195,7 +195,7 @@ def execute(args: ScriptArgs):
         f"--sglang-dp-size {args.sglang_dp} "
         f"--sglang-ep-size {args.sglang_ep} "
         "--sglang-enable-dp-lm-head "
-        "--sglang-disable-cuda-graph "
+        "--sglang-cuda-graph-bs 1 2 4 8 16 "
         # "--sglang-moe-a2a-backend deepep "
         # "--sglang-deepep-mode auto "
         f"--sglang-inter-node-transfer-engine-info-port {args.inter_node_transfer_engine_info_port} "
@@ -270,8 +270,8 @@ def execute(args: ScriptArgs):
         is_head_node=args.node_rank == 0,
         num_gpus=num_gpus,
     )
-    if args.node_rank > 0:
-        time.sleep(3600)
+    # if args.node_rank > 0:
+    #     time.sleep(3600)
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
