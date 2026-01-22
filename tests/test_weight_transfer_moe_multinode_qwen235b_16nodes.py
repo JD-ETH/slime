@@ -195,7 +195,7 @@ def execute(args: ScriptArgs):
         f"--sglang-dp-size {args.sglang_dp} "
         f"--sglang-ep-size {args.sglang_ep} "
         "--sglang-enable-dp-lm-head "
-        "--sglang-cuda-graph-bs 1 "
+        "--sglang-disable-cuda-graph "
         # "--sglang-moe-a2a-backend deepep "
         # "--sglang-deepep-mode auto "
         f"--sglang-inter-node-transfer-engine-info-port {args.inter_node_transfer_engine_info_port} "
