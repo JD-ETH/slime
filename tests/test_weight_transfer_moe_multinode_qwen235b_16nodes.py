@@ -29,8 +29,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     sglang_ep: int = 32
     sglang_pp: int = 1
     # Total Ressources
-    num_train_gpus: int = 4 * GPUS_PER_NODE  # 8 nodes * 8 GPUs
-    num_rollout_gpus: int = 32  # 8 nodes * 8 GPUs for rollout
+    num_train_gpus: int = 8 * GPUS_PER_NODE  # 8 nodes * 8 GPUs
+    num_rollout_gpus: int = 64  # 8 nodes * 8 GPUs for rollout
     # Optimizations
     pipelined_transfer: bool = False
     # Profiling
@@ -39,7 +39,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     multinode: bool = True
     head_node_ip: str | None = None
     node_rank: int = 0
-    nnodes: int = 8
+    nnodes: int = 16
     inter_node_transfer_engine_info_port: int = 15500  # TODO: initialize this port from ray.
     decoder_last_pipeline_num_layers: int = 22
 
