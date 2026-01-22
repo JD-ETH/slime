@@ -313,9 +313,9 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         if not self._is_source or not converted_named_tensors:
             return
 
-        if self._model_on_cpu:
-            torch_memory_saver.resume(self.tag)
-            self._model_on_cpu = False
+        # if self._model_on_cpu:
+        #     torch_memory_saver.resume(self.tag)
+        #     self._model_on_cpu = False
 
         for transfer_bundle in self.engines.values():
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
@@ -333,11 +333,11 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                 transfer_bundle.execute()
 
         # Offload model replicas from memory after transfer.
-        if not self._model_on_cpu:
-            print_memory("[RDMA] Before offloading model replica")
-            torch_memory_saver.pause(self.tag)
-            self._model_on_cpu = True
-            print_memory("[RDMA] After offloading model replica")
+        # if not self._model_on_cpu:
+        #     print_memory("[RDMA] Before offloading model replica")
+        #     torch_memory_saver.pause(self.tag)
+        #     self._model_on_cpu = True
+        #     print_memory("[RDMA] After offloading model replica")
         return
 
 
