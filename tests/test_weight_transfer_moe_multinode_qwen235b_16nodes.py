@@ -270,8 +270,8 @@ def execute(args: ScriptArgs):
         is_head_node=args.node_rank == 0,
         num_gpus=num_gpus,
     )
-    # if args.node_rank > 0:
-    #     time.sleep(3600)
+    if args.node_rank > 0:
+        time.sleep(3600)
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
