@@ -282,7 +282,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             # Create local model replicas and transfer engines for each target rollout shard
             self.engines = {}
             # Associate transfer tasks based on obtained session and weight info
-            with torch_memory_saver.region(tag=self.tag):
+            with torch_memory_saver.region(tag=self.tag, enable_cpu_backup=False):
                 for target in targets:
                     session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
                     remote_info = RemoteWeightInfo(session_id, self.remote_weight_infos_by_session_id[session_id])
@@ -422,6 +422,33 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         )
         return
 
+    def _load_bucket_weights(
+        self, model_replica: torch.nn.Module, converted_named_tensors: list[tuple[str, torch.Tensor]]
+    ) -> list[str]:
+        """
+        Returns the names of updated parameters after loading weights into model_replica.
+        """
+        stacked_params_mapping = [
+            # (param_name, shard_name)
+            (".qkv_proj", ".q_proj"),
+            (".qkv_proj", ".k_proj"),
+            (".qkv_proj", ".v_proj"),
+            ("gate_up_proj", "up_proj"),
+            ("gate_up_proj", "gate_proj"),
+        ]
+
+        updated_names = set()
+        for name, _ in converted_named_tensors:
+            converted_name = name
+            for param_name, weight_name in stacked_params_mapping:
+                if weight_name in name:
+                    converted_name = name.replace(weight_name, param_name)
+                    break
+            updated_names.add(converted_name)
+
+        model_replica.load_weights(converted_named_tensors)
+        return list(updated_names)
+
     def _update_bucket_weights_from_remote(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
     ) -> None:
@@ -439,7 +466,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             self._model_on_cpu = False
 
         for transfer_bundle in self.engines.values():
-            updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
+            updated_name = self._load_bucket_weights(transfer_bundle.model_replica, converted_named_tensors)
             if self.pipelined_transfer:
                 # Use executable queue for async transfer operations
                 transfer_bundle.execute_each(updated_name, self.executable_queue)
