@@ -603,6 +603,20 @@ class MockSglangDistributedContext:
             patch("sglang.srt.models.deepseek_v2.get_pp_group", return_value=mock_pp_group),
             patch("sglang.srt.models.deepseek_v2.get_moe_expert_parallel_world_size", return_value=self.ep_size),
             patch("sglang.srt.models.deepseek_v2.is_dp_attention_enabled", return_value=self.server_args.enable_dp_attention),
+            
+            patch("sglang.srt.models.qwen3_moe.get_attention_tp_rank", return_value=self.attn_tp_rank),
+            patch("sglang.srt.models.qwen3_moe.get_attention_tp_size", return_value=self.attn_tp_size),
+            patch("sglang.srt.models.qwen3_moe.get_tensor_model_parallel_world_size", return_value=self.tp_size),
+            patch("sglang.srt.models.qwen3_moe.get_tensor_model_parallel_rank", return_value=self.tp_rank),
+            patch("sglang.srt.models.qwen3_moe.get_pp_group", return_value=mock_pp_group),
+            patch("sglang.srt.models.qwen3_moe.get_moe_expert_parallel_world_size", return_value=self.ep_size),
+
+            patch("sglang.srt.models.qwen2_moe.get_attention_tp_rank", return_value=self.attn_tp_rank),
+            patch("sglang.srt.models.qwen2_moe.get_attention_tp_size", return_value=self.attn_tp_size),
+            patch("sglang.srt.models.qwen2_moe.get_tensor_model_parallel_world_size", return_value=self.tp_size),
+            patch("sglang.srt.models.qwen2_moe.is_dp_attention_enabled", return_value=self.server_args.enable_dp_attention),
+            patch("sglang.srt.models.qwen2_moe.get_pp_group", return_value=mock_pp_group),
+            patch("sglang.srt.models.qwen2_moe.get_moe_expert_parallel_world_size", return_value=self.ep_size),
             # Patch moe layers
             patch(
                 "sglang.srt.layers.moe.fused_moe_triton.layer.get_moe_expert_parallel_rank", return_value=self.ep_rank
