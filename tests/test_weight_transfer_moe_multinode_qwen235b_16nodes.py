@@ -266,7 +266,7 @@ def execute(args: ScriptArgs):
             "RAY_DEBUG": "1",
             "PYTHONPATH": "/root/Megatron-LM/",
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            "NCCL_NVLS_ENABLE": "1" if enable_nccl_nvls else "0",  # Assuming NVLINK is available for multi-node setup
+            "NCCL_NVLS_ENABLE": "1" if args.enable_nccl_nvls else "0",  # Assuming NVLINK is available for multi-node setup
         },
         multinode=args.multinode,
         is_head_node=args.node_rank == 0,
