@@ -255,7 +255,7 @@ def execute(args: ScriptArgs):
         f"{profile_args} "
     )
     if args.node_rank > 0:
-        time.sleep(10)
+        time.sleep(20)
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=num_gpus_per_node,
