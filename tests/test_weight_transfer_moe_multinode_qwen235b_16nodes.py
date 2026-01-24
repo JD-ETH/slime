@@ -43,6 +43,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     inter_node_transfer_engine_info_port: int = 15500  # TODO: initialize this port from ray.
     decoder_last_pipeline_num_layers: int = 22
     wait_after: bool = False
+    enable_nccl_nvls: bool = False
 
     def validate(self):
         if self.multinode:
@@ -265,7 +266,7 @@ def execute(args: ScriptArgs):
             "RAY_DEBUG": "1",
             "PYTHONPATH": "/root/Megatron-LM/",
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            "NCCL_NVLS_ENABLE": "1",  # Assuming NVLINK is available for multi-node setup
+            "NCCL_NVLS_ENABLE": "1" if enable_nccl_nvls else "0",  # Assuming NVLINK is available for multi-node setup
         },
         multinode=args.multinode,
         is_head_node=args.node_rank == 0,
