@@ -42,6 +42,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     nnodes: int = 16
     inter_node_transfer_engine_info_port: int = 15500  # TODO: initialize this port from ray.
     decoder_last_pipeline_num_layers: int = 22
+    wait_after: bool = False
 
     def validate(self):
         if self.multinode:
@@ -270,7 +271,7 @@ def execute(args: ScriptArgs):
         is_head_node=args.node_rank == 0,
         num_gpus=num_gpus,
     )
-    if args.node_rank > 0:
+    if args.node_rank > 0 and args.wait_after:
         time.sleep(3600)
 
 @U.dataclass_cli
