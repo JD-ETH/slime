@@ -510,11 +510,12 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         if not self._is_source or not converted_named_tensors:
             return
 
+        # TODO: Parallelize each transfer bundle weight loading and transfer
         for transfer_bundle in self.engines.values():
             if transfer_bundle._model_on_cpu:
-                # Onload model replica to GPU asynchronously
+                # Realloc model replica on GPU since we don't need the last values
                 for weight in transfer_bundle.model_replica.parameters():
-                    weight.data = weight.data.pin_memory().to(torch.cuda.current_device(), non_blocking=True)
+                    weight = weight.storage().resize_(weight.numel())
                 transfer_bundle._model_on_cpu = False
                 transfer_bundle.weight_memory_registry = self._register_replica_memory(
                         transfer_bundle.model_replica, transfer_bundle.remote_weight_infos[0].weights_info, transfer_bundle.engine
@@ -544,7 +545,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             logging.info("[RDMA] Waiting for all queued transfer tasks to complete...")
             # NOTE: set the timeout?
             assert self.executable_queue.wait_all_complete(
-                timeout=30000.0
+                timeout=30.0
             ), "[RDMA] Some transfer tasks may not have completed within timeout"
 
             # Add CUDA synchronization to ensure all asynchronous RDMA operations are complete
@@ -563,8 +564,9 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
 
                 # Offload model replica to CPU asynchronously
                 for weight in transfer_bundle.model_replica.parameters():
-                    weight.data = weight.data.to("cpu", non_blocking=True)
+                    weight.storage().resize_(0)
                 transfer_bundle._model_on_cpu = True
+        torch.cuda.empty_cache()
         print_memory("[RDMA] After offloading model replica")
 
         return
