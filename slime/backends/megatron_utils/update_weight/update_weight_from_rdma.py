@@ -346,6 +346,60 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
 
             print_memory("[RDMA] After Local Engine Replicas and engine Creation")
 
+    def _unregister_replica_memory(self, model_replica, transfer_engine) -> None:
+        """
+        Unregister RDMA memory regions for model replica.
+        This mirrors the logic of register_memory_region_v2 to find the exact memory blocks that were registered.
+        """
+        # Collect all weight addresses
+        weight_addr_set = set()
+        for name, weight in model_replica.named_parameters():
+            weight_addr_set.add(weight.data_ptr())
+
+        # Scan CUDA memory snapshot to find memory blocks holding weights
+        memory_snapshot = torch.cuda.memory.memory_snapshot()
+        weight_blocks_for_unreg_mr = []
+
+        # Blocks in each segment have continuous physical addresses,
+        # so they were merged during registration and should be unregistered as merged blocks.
+        for segment in memory_snapshot:
+            current_weight_block = None
+            blocks = segment.get("blocks", [])
+            for block in blocks:
+                address = block.get("address", -1)
+                size = block.get("size", -1)
+                state = block.get("state", "")
+                if address < 0 or size < 0 or state == "":
+                    continue
+                # Only unregister active allocated memory blocks that hold weights.
+                if state == "active_allocated":
+                    if address in weight_addr_set:
+                        if current_weight_block is None:
+                            current_weight_block = (address, size)
+                        elif current_weight_block[0] + current_weight_block[1] == address:
+                            # Merge contiguous blocks
+                            current_weight_block = (
+                                current_weight_block[0],
+                                current_weight_block[1] + size,
+                            )
+                        else:
+                            weight_blocks_for_unreg_mr.append(current_weight_block)
+                            current_weight_block = (address, size)
+            if current_weight_block is not None:
+                weight_blocks_for_unreg_mr.append(current_weight_block)
+
+        # Unregister merged memory blocks
+        logger.info(f"[RDMA] Unregistering {len(weight_blocks_for_unreg_mr)} merged memory blocks...")
+        for weight_block in weight_blocks_for_unreg_mr:
+            address, size = weight_block
+            ret = transfer_engine.unregister_memory(address)
+            if ret != 0:
+                logger.warning(
+                    f"[RDMA] Failed to unregister memory block at address {address} with size {size}, error: {ret}"
+                )
+            else:
+                logger.debug(f"[RDMA] Successfully unregistered memory block at {address}, size {size}")
+
     def _register_replica_memory(self, model_replica, remote_weight_info, transfer_engine) -> dict:
         # Verify the 1-to-1 mapping between local replica and remote weights expected.
         for name, tensor in model_replica.named_parameters():
@@ -502,17 +556,10 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         print_memory("[RDMA] Before offloading model replica")
         for transfer_bundle in self.engines.values():
             if not transfer_bundle._model_on_cpu:
-                # Unregister RDMA memory regions BEFORE offloading to CPU
-                # Collect unique addresses from weight_memory_registry
-                unique_addrs = set()
-                for name, (addr, numel, ele_size) in transfer_bundle.weight_memory_registry.items():
-                    unique_addrs.add(addr)
-
-                logger.info(f"[RDMA] Unregistering {len(unique_addrs)} memory regions before CPU offload...")
-                for addr in unique_addrs:
-                    ret = transfer_bundle.engine.unregister_memory(addr)
-                    if ret != 0:
-                        logger.warning(f"[RDMA] Failed to unregister memory at {addr}, error: {ret}")
+                # Unregister RDMA memory regions before offloading to CPU
+                # This prevents resource leaks and allows the memory blocks to be reused
+                logger.info("[RDMA] Unregistering memory before offload to CPU...")
+                self._unregister_replica_memory(transfer_bundle.model_replica, transfer_bundle.engine)
 
                 # Offload model replica to CPU asynchronously
                 for weight in transfer_bundle.model_replica.parameters():
