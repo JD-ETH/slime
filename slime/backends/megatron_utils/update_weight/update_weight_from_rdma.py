@@ -79,8 +79,9 @@ class ExecutableQueue:
                     ret = task.engine.batch_transfer_async_write(
                         task.session_id, task.source_ptrs, task.target_ptrs, task.source_lens
                     )
+                    result = task.engine.get_batch_transfer_status(ret)
                     logger.info(f"[RDMA] Executing transfer task for session {task.session_id} done")
-                    if ret < 0:
+                    if ret < 0 or result < 0:
                         logging.error(f"RDMA transfer failed with error code {ret} for session {task.session_id}")
                 finally:
                     self._queue.task_done()
@@ -484,6 +485,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         
         for transfer_bundle in self.engines.values():
             transfer_bundle.model_replica.turn_off_weight_transfer_recording()
+
         # Offload model replicas from memory after transfer.
         # if not self._model_on_cpu:
         #     print_memory("[RDMA] Before offloading model replica")
