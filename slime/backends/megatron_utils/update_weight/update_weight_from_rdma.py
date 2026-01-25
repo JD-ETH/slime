@@ -88,7 +88,7 @@ class ExecutableQueue:
                     logger.info(f"[RDMA] Executing transfer task for session {task.session_id} done")
                     if ret < 0:
                         logging.error(f"RDMA transfer failed with error code {ret} for session {task.session_id}")
-                    self._active_transferring_batch_ids.append(ret)
+                
                 finally:
                     self._queue.task_done()
                     with self._lock:
