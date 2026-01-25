@@ -460,10 +460,11 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             if any([("expert" in n) for n in ds]):
                 logger.info(f"expert transfering: {ds}")
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
+            logger.info(f"[for target rank {key}], update_name: {updated_name}")
             
             if isinstance(updated_name,tuple):
                 updated_name, could_update = updated_name
-                logger.info(f"[for target rank {key}], update_name: {updated_name}")
+                
                 missed_weight = [updated_name[i] for i in range(len(updated_name)) if not could_update[i]]
                 logger.info(f"missed_weight {missed_weight}")
                 updated_name = [updated_name[i] for i in range(len(updated_name)) if could_update[i]]
