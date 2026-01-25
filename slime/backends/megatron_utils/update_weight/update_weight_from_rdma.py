@@ -438,12 +438,16 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         #     torch_memory_saver.resume(self.tag)
         #     self._model_on_cpu = False
 
-        for transfer_bundle in self.engines.values():
+        for key, transfer_bundle in self.engines.items():
             if not transfer_bundle.model_replica.is_weight_transfering_recording:
                 transfer_bundle.model_replica.turn_on_weight_transfer_recording()
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
+            
             if isinstance(updated_name,tuple):
                 updated_name, could_update = updated_name
+                logger.info(f"[for target rank {key}], update_name: {updated_name}")
+                missed_weight = [updated_name[i] for i in range(len(updated_name)) if not could_update[i]]
+                logger.info(f"missed_weight {missed_weight}")
                 updated_name = [updated_name[i] for i in range(len(updated_name)) if could_update[i]]
 
             if self.pipelined_transfer:
