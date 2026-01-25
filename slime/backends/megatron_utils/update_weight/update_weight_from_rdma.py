@@ -456,6 +456,9 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         for key, transfer_bundle in self.engines.items():
             if not transfer_bundle.model_replica.is_weight_transfering_recording:
                 transfer_bundle.model_replica.turn_on_weight_transfer_recording()
+            ds = [name for name, t in converted_named_tensors]
+            if any([("expert" in n) for n in ds]):
+                logger.info(f"expert transfering: {ds}")
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
             
             if isinstance(updated_name,tuple):
