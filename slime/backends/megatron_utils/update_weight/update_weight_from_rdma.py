@@ -439,7 +439,13 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         #     self._model_on_cpu = False
 
         for transfer_bundle in self.engines.values():
+            if not transfer_bundle.model_replica.is_weight_transfering_recording:
+                transfer_bundle.model_replica.turn_on_weight_transfer_recording()
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
+            if isinstance(updated_name,tuple):
+                updated_name, could_update = updated_name
+                updated_name = [updated_name[i] for i in range(len(updated_name)) if could_update[i]]
+
             if self.pipelined_transfer:
                 # Use executable queue for async transfer operations
                 transfer_bundle.execute_each(updated_name, self.executable_queue)
@@ -471,7 +477,9 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             # This is critical to prevent race conditions with memory offloading
             logging.info("[RDMA] Synchronizing CUDA to ensure all asynchronous operations complete...")
             torch.cuda.synchronize()
-
+        
+        for transfer_bundle in self.engines.values():
+            transfer_bundle.model_replica.turn_off_weight_transfer_recording()
         # Offload model replicas from memory after transfer.
         # if not self._model_on_cpu:
         #     print_memory("[RDMA] Before offloading model replica")
