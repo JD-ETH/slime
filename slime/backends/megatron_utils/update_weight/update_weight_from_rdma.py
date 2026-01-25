@@ -18,7 +18,6 @@ from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.remote_instance_weight_loader_utils import register_memory_region_v2
 from sglang.srt.server_args import ServerArgs
-from torch_memory_saver import torch_memory_saver
 from tqdm import tqdm
 
 from slime.utils.memory_utils import print_memory
@@ -168,7 +167,7 @@ class TransferBundle:
     engine: TransferEngine
     weight_memory_registry: dict
     remote_weight_infos: list[RemoteWeightInfo]
-    _model_on_cpu: bool = False
+    model_on_cpu: bool = False
 
     def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
         self.remote_weight_infos.append(remote_info)
@@ -353,7 +352,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         """
         # Collect all weight addresses
         weight_addr_set = set()
-        for name, weight in model_replica.named_parameters():
+        for _, weight in model_replica.named_parameters():
             weight_addr_set.add(weight.data_ptr())
 
         # Scan CUDA memory snapshot to find memory blocks holding weights
@@ -512,14 +511,16 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
 
         # TODO: Parallelize each transfer bundle weight loading and transfer
         for transfer_bundle in self.engines.values():
-            if transfer_bundle._model_on_cpu:
+            if transfer_bundle.model_on_cpu:
                 # Realloc model replica on GPU since we don't need the last values
                 for weight in transfer_bundle.model_replica.parameters():
                     weight = weight.storage().resize_(weight.numel())
-                transfer_bundle._model_on_cpu = False
+                transfer_bundle.model_on_cpu = False
                 transfer_bundle.weight_memory_registry = self._register_replica_memory(
-                        transfer_bundle.model_replica, transfer_bundle.remote_weight_infos[0].weights_info, transfer_bundle.engine
-                    )
+                    transfer_bundle.model_replica,
+                    transfer_bundle.remote_weight_infos[0].weights_info,
+                    transfer_bundle.engine,
+                )
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
             if self.pipelined_transfer:
                 # Use executable queue for async transfer operations
@@ -556,7 +557,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         # Offload model replicas from memory after transfer.
         print_memory("[RDMA] Before offloading model replica")
         for transfer_bundle in self.engines.values():
-            if not transfer_bundle._model_on_cpu:
+            if not transfer_bundle.model_on_cpu:
                 # Unregister RDMA memory regions before offloading to CPU
                 # This prevents resource leaks and allows the memory blocks to be reused
                 logger.info("[RDMA] Unregistering memory before offload to CPU...")
@@ -565,7 +566,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                 # Offload model replica to CPU asynchronously
                 for weight in transfer_bundle.model_replica.parameters():
                     weight.storage().resize_(0)
-                transfer_bundle._model_on_cpu = True
+                transfer_bundle.model_on_cpu = True
         torch.cuda.empty_cache()
         print_memory("[RDMA] After offloading model replica")
 
