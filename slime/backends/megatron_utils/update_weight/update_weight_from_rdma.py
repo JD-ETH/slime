@@ -18,7 +18,6 @@ from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.remote_instance_weight_loader_utils import register_memory_region_v2
 from sglang.srt.server_args import ServerArgs
-from torch_memory_saver import torch_memory_saver
 from tqdm import tqdm
 
 from slime.utils.memory_utils import print_memory
@@ -66,6 +65,7 @@ class ExecutableQueue:
         self._tasks_completed = threading.Event()
         self._active_tasks = 0
         self._lock = threading.Lock()
+        self._batch_records = {}
 
     def _background_worker(self):
         """Background thread worker that processes queued transfer tasks."""
@@ -74,14 +74,17 @@ class ExecutableQueue:
                 # Get task with timeout to allow periodic shutdown checks
                 task = self._queue.get(timeout=0.1)
                 try:
-                    # Execute the RDMA transfer
+                    # Execute the RDMA transfer asynchronously
                     logger.info(f"[RDMA] Executing transfer task for session {task.session_id}...")
-                    ret = task.engine.batch_transfer_async_write(
+                    batch_id = task.engine.batch_transfer_async_write(
                         task.session_id, task.source_ptrs, task.target_ptrs, task.source_lens
                     )
-                    logger.info(f"[RDMA] Executing transfer task for session {task.session_id} done")
-                    if ret < 0:
-                        logging.error(f"RDMA transfer failed with error code {ret} for session {task.session_id}")
+                    logger.info(f"[RDMA] Submitted transfer task for session {task.session_id}, batch_id={batch_id}")
+                    # Record batch_id with engine and source_ptrs for later sync and unregister
+                    with self._lock:
+                        if task.engine not in self._batch_records:
+                            self._batch_records[task.engine] = []
+                        self._batch_records[task.engine].append(batch_id)
                 finally:
                     self._queue.task_done()
                     with self._lock:
@@ -117,7 +120,9 @@ class ExecutableQueue:
     def wait_all_complete(self, timeout=30.0):
         """Wait for all queued tasks to complete before proceeding."""
         if self._active_tasks == 0:
-            return True
+            # Still need to check if there are pending batch transfers
+            if len(self._batch_records) == 0:
+                return True
 
         # Wait for the completion event first
         if not self._tasks_completed.wait(timeout):
@@ -127,10 +132,27 @@ class ExecutableQueue:
         # This ensures all tasks have been processed by calling task_done()
         try:
             self._queue.join()  # Wait until all items in the queue have been processed
-            return True
         except Exception as e:
             logging.error(f"Error during queue join: {e}")
             return False
+
+        # Sync all batch transfers and unregister memory
+        with self._lock:
+            batch_records = dict(self._batch_records)
+            self._batch_records.clear()
+
+        if batch_records:
+            logging.info(f"[RDMA] Syncing batch transfers for {len(batch_records)} engines...")
+            for engine, batch_ids in batch_records.items():
+                if batch_ids:
+                    logging.info(f"[RDMA] Waiting for {len(batch_ids)} batch transfers to complete...")
+                    ret = engine.get_batch_transfer_status(batch_ids)
+                    if ret < 0:
+                        logging.error(f"[RDMA] Batch transfer failed with error code {ret}")
+                        return False
+                    logging.info(f"[RDMA] All {len(batch_ids)} batch transfers completed successfully")
+
+        return True
 
     def shutdown(self):
         """Shutdown the background worker thread."""
@@ -145,6 +167,7 @@ class TransferBundle:
     engine: TransferEngine
     weight_memory_registry: dict
     remote_weight_infos: list[RemoteWeightInfo]
+    model_on_cpu: bool = False
 
     def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
         self.remote_weight_infos.append(remote_info)
@@ -234,7 +257,6 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
 
         # For torch memory saver tagging
         self.tag = f"Model Replica {self.global_rank}"
-        self._model_on_cpu = False
         self.pipelined_transfer = args.rdma_pipelined_transfer
 
         # Initialize executable queue for async transfer operations
@@ -282,47 +304,100 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             # Create local model replicas and transfer engines for each target rollout shard
             self.engines = {}
             # Associate transfer tasks based on obtained session and weight info
-            with torch_memory_saver.region(tag=self.tag):
-                for target in targets:
-                    session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
-                    remote_info = RemoteWeightInfo(session_id, self.remote_weight_infos_by_session_id[session_id])
-                    # Instantiate the local model replicas and a corresponding transfer engine with memory registry for each type of rollout shard.
-                    # TODO verify:
-                    # - if sglang dp is enabled, then attn_tp is equal to tp // dp
-                    # - if sglang ep is enabled, then moe-tp is equal to tp // ep
-                    # generally tp * pp should be equal to the world_size
-                    if target.engine_rank not in self.engines:
-                        transfer_engine = self._create_transfer_engine()
-                        parallel_rank_dict = self.transfer_plan.tp_conversion(target.engine_rank)
-                        logger.info(
-                            f"[RDMA] Creating model replica for engine rank {target.engine_rank} with rank dict {parallel_rank_dict}"
-                        )
-                        model_replica = self._create_inference_replica(
-                            self.args.hf_checkpoint,
-                            pp_shard=target.source_shard,
-                            target_rank=target.engine_rank,  # NOTE: here we assume that sglang_tp == world_size when pp_size == 1
-                            target_tp=self.args.rollout_num_gpus_per_engine,
-                            dp_rank=parallel_rank_dict["dp_rank"],
-                            dp_size=self.transfer_plan._rollout_dp_size,
-                            attn_tp_rank=parallel_rank_dict["attn_tp_rank"],
-                            attn_tp_size=self.transfer_plan._rollout_attn_tp_size,
-                            ep_rank=parallel_rank_dict["ep_rank"],
-                            ep_size=self.transfer_plan._rollout_ep_size,
-                            moe_tp_rank=parallel_rank_dict["moe_tp_rank"],
-                            moe_tp_size=self.transfer_plan._rollout_moe_tp_size,
-                            server_args=self.session_id_to_server_args[session_id],
-                        )
-                        print_memory(f"[RDMA] After model replica at {target.engine_rank}")
-                        weight_memory_registry = self._register_replica_memory(
-                            model_replica, self.remote_weight_infos_by_session_id[session_id], transfer_engine
-                        )
-                        self.engines[target.engine_rank] = TransferBundle(
-                            model_replica, transfer_engine, weight_memory_registry, [remote_info]
-                        )
-                    else:
-                        self.engines[target.engine_rank].add_remote_session(remote_info)
+            for target in targets:
+                session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
+                remote_info = RemoteWeightInfo(session_id, self.remote_weight_infos_by_session_id[session_id])
+                # Instantiate the local model replicas and a corresponding transfer engine with memory registry for each type of rollout shard.
+                # TODO verify:
+                # - if sglang dp is enabled, then attn_tp is equal to tp // dp
+                # - if sglang ep is enabled, then moe-tp is equal to tp // ep
+                # generally tp * pp should be equal to the world_size
+                if target.engine_rank not in self.engines:
+                    transfer_engine = self._create_transfer_engine()
+                    parallel_rank_dict = self.transfer_plan.tp_conversion(target.engine_rank)
+                    logger.info(
+                        f"[RDMA] Creating model replica for engine rank {target.engine_rank} with rank dict {parallel_rank_dict}"
+                    )
+                    model_replica = self._create_inference_replica(
+                        self.args.hf_checkpoint,
+                        pp_shard=target.source_shard,
+                        target_rank=target.engine_rank,  # NOTE: here we assume that sglang_tp == world_size when pp_size == 1
+                        target_tp=self.args.rollout_num_gpus_per_engine,
+                        dp_rank=parallel_rank_dict["dp_rank"],
+                        dp_size=self.transfer_plan._rollout_dp_size,
+                        attn_tp_rank=parallel_rank_dict["attn_tp_rank"],
+                        attn_tp_size=self.transfer_plan._rollout_attn_tp_size,
+                        ep_rank=parallel_rank_dict["ep_rank"],
+                        ep_size=self.transfer_plan._rollout_ep_size,
+                        moe_tp_rank=parallel_rank_dict["moe_tp_rank"],
+                        moe_tp_size=self.transfer_plan._rollout_moe_tp_size,
+                        server_args=self.session_id_to_server_args[session_id],
+                    )
+                    print_memory(f"[RDMA] After model replica at {target.engine_rank}")
+                    weight_memory_registry = self._register_replica_memory(
+                        model_replica, self.remote_weight_infos_by_session_id[session_id], transfer_engine
+                    )
+                    self.engines[target.engine_rank] = TransferBundle(
+                        model_replica, transfer_engine, weight_memory_registry, [remote_info]
+                    )
+                else:
+                    self.engines[target.engine_rank].add_remote_session(remote_info)
 
             print_memory("[RDMA] After Local Engine Replicas and engine Creation")
+
+    def _unregister_replica_memory(self, model_replica, transfer_engine) -> None:
+        """
+        Unregister RDMA memory regions for model replica.
+        This mirrors the logic of register_memory_region_v2 to find the exact memory blocks that were registered.
+        """
+        # Collect all weight addresses
+        weight_addr_set = set()
+        for _, weight in model_replica.named_parameters():
+            weight_addr_set.add(weight.data_ptr())
+
+        # Scan CUDA memory snapshot to find memory blocks holding weights
+        memory_snapshot = torch.cuda.memory.memory_snapshot()
+        weight_blocks_for_unreg_mr = []
+
+        # Blocks in each segment have continuous physical addresses,
+        # so they were merged during registration and should be unregistered as merged blocks.
+        for segment in memory_snapshot:
+            current_weight_block = None
+            blocks = segment.get("blocks", [])
+            for block in blocks:
+                address = block.get("address", -1)
+                size = block.get("size", -1)
+                state = block.get("state", "")
+                if address < 0 or size < 0 or state == "":
+                    continue
+                # Only unregister active allocated memory blocks that hold weights.
+                if state == "active_allocated":
+                    if address in weight_addr_set:
+                        if current_weight_block is None:
+                            current_weight_block = (address, size)
+                        elif current_weight_block[0] + current_weight_block[1] == address:
+                            # Merge contiguous blocks
+                            current_weight_block = (
+                                current_weight_block[0],
+                                current_weight_block[1] + size,
+                            )
+                        else:
+                            weight_blocks_for_unreg_mr.append(current_weight_block)
+                            current_weight_block = (address, size)
+            if current_weight_block is not None:
+                weight_blocks_for_unreg_mr.append(current_weight_block)
+
+        # Unregister merged memory blocks
+        logger.info(f"[RDMA] Unregistering {len(weight_blocks_for_unreg_mr)} merged memory blocks...")
+        for weight_block in weight_blocks_for_unreg_mr:
+            address, size = weight_block
+            ret = transfer_engine.unregister_memory(address)
+            if ret != 0:
+                logger.warning(
+                    f"[RDMA] Failed to unregister memory block at address {address} with size {size}, error: {ret}"
+                )
+            else:
+                logger.debug(f"[RDMA] Successfully unregistered memory block at {address}, size {size}")
 
     def _register_replica_memory(self, model_replica, remote_weight_info, transfer_engine) -> dict:
         # Verify the 1-to-1 mapping between local replica and remote weights expected.
@@ -434,11 +509,18 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         if not self._is_source or not converted_named_tensors:
             return
 
-        if self._model_on_cpu:
-            torch_memory_saver.resume(self.tag)
-            self._model_on_cpu = False
-
+        # TODO: Parallelize each transfer bundle weight loading and transfer
         for transfer_bundle in self.engines.values():
+            if transfer_bundle.model_on_cpu:
+                # Realloc model replica on GPU since we don't need the last values
+                for weight in transfer_bundle.model_replica.parameters():
+                    weight = weight.storage().resize_(weight.numel())
+                transfer_bundle.model_on_cpu = False
+                transfer_bundle.weight_memory_registry = self._register_replica_memory(
+                    transfer_bundle.model_replica,
+                    transfer_bundle.remote_weight_infos[0].weights_info,
+                    transfer_bundle.engine,
+                )
             updated_name = transfer_bundle.model_replica.load_weights(converted_named_tensors)
             if self.pipelined_transfer:
                 # Use executable queue for async transfer operations
@@ -473,11 +555,21 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             torch.cuda.synchronize()
 
         # Offload model replicas from memory after transfer.
-        if not self._model_on_cpu:
-            print_memory("[RDMA] Before offloading model replica")
-            torch_memory_saver.pause(self.tag)
-            self._model_on_cpu = True
-            print_memory("[RDMA] After offloading model replica")
+        print_memory("[RDMA] Before offloading model replica")
+        for transfer_bundle in self.engines.values():
+            if not transfer_bundle.model_on_cpu:
+                # Unregister RDMA memory regions before offloading to CPU
+                # This prevents resource leaks and allows the memory blocks to be reused
+                logger.info("[RDMA] Unregistering memory before offload to CPU...")
+                self._unregister_replica_memory(transfer_bundle.model_replica, transfer_bundle.engine)
+
+                # Offload model replica to CPU asynchronously
+                for weight in transfer_bundle.model_replica.parameters():
+                    weight.storage().resize_(0)
+                transfer_bundle.model_on_cpu = True
+        torch.cuda.empty_cache()
+        print_memory("[RDMA] After offloading model replica")
+
         return
 
 
