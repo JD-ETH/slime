@@ -52,6 +52,10 @@ class TransferTask:
     source_lens: list[int]
     engine: TransferEngine
 
+@dataclasses.dataclass
+class TransferEngineSession:
+    engine: TransferEngine
+
 
 class ExecutableQueue:
     """
@@ -65,6 +69,7 @@ class ExecutableQueue:
         self._shutdown_event = threading.Event()
         self._tasks_completed = threading.Event()
         self._active_tasks = 0
+        self._active_transferring_engine_batch_ids = {}
         self._lock = threading.Lock()
 
     def _background_worker(self):
@@ -79,10 +84,11 @@ class ExecutableQueue:
                     ret = task.engine.batch_transfer_async_write(
                         task.session_id, task.source_ptrs, task.target_ptrs, task.source_lens
                     )
-                    result = task.engine.get_batch_transfer_status(ret)
+                    self._active_transferring_engine_batch_ids[task.engine] = self._active_transferring_engine_batch_ids.get(task.engine, []) + [ret]
                     logger.info(f"[RDMA] Executing transfer task for session {task.session_id} done")
-                    if ret < 0 or result < 0:
+                    if ret < 0:
                         logging.error(f"RDMA transfer failed with error code {ret} for session {task.session_id}")
+                    self._active_transferring_batch_ids.append(ret)
                 finally:
                     self._queue.task_done()
                     with self._lock:
@@ -123,11 +129,19 @@ class ExecutableQueue:
         # Wait for the completion event first
         if not self._tasks_completed.wait(timeout):
             return False
+        
+        for e, batch_ids in self._active_transferring_engine_batch_ids.items():
+            result = e.get_batch_transfer_status(batch_ids)
+            if result < 0:
+                raise RuntimeError(f"Batch transfer weights via RDMA failed with error code {result}.")
 
         # Additionally wait for the queue to be fully processed to avoid race conditions
         # This ensures all tasks have been processed by calling task_done()
         try:
             self._queue.join()  # Wait until all items in the queue have been processed
+            for e in self._active_transferring_engine_batch_ids.keys():
+                self._active_transferring_engine_batch_ids[e] = []
+
             return True
         except Exception as e:
             logging.error(f"Error during queue join: {e}")
@@ -482,6 +496,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             # This is critical to prevent race conditions with memory offloading
             logging.info("[RDMA] Synchronizing CUDA to ensure all asynchronous operations complete...")
             torch.cuda.synchronize()
+        
         
         for transfer_bundle in self.engines.values():
             transfer_bundle.model_replica.turn_off_weight_transfer_recording()
