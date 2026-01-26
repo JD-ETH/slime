@@ -20,7 +20,7 @@ from sglang.srt.model_loader.remote_instance_weight_loader_utils import register
 from sglang.srt.server_args import ServerArgs
 from torch_memory_saver import torch_memory_saver
 from tqdm import tqdm
-
+import time
 from slime.utils.memory_utils import print_memory
 
 from .update_weight_from_remote import UpdateWeightFromRemote
@@ -130,10 +130,33 @@ class ExecutableQueue:
         if not self._tasks_completed.wait(timeout):
             return False
         
-        for e, batch_ids in self._active_transferring_engine_batch_ids.items():
-            result = e.get_batch_transfer_status(batch_ids)
-            if result < 0:
-                raise RuntimeError(f"Batch transfer weights via RDMA failed with error code {result}.")
+        tes = {}
+        
+        Check_done = False
+        wait_count = 5
+        while wait_count >= 0:
+            for e in self._active_transferring_engine_batch_ids.keys():
+                batch_ids = self._active_transferring_engine_batch_ids[e]
+                if len(batch_ids) > 0:
+                    result = e.get_batch_transfer_status(batch_ids)
+                    if result >= 0:
+                        self._active_transferring_engine_batch_ids[e] = []
+            assert_check_done =True            
+            for e in self._active_transferring_engine_batch_ids.keys():
+                batch_ids = self._active_transferring_engine_batch_ids[e]
+                if len(batch_ids) > 0:
+                    assert_check_done = False
+                    break
+            if not assert_check_done:
+                logger.info(f"rdma transferring not done yet, waiting {wait_count}")
+                wait_count -=1
+                if wait_count <=0:
+                    raise RuntimeError(f"Batch transfer weights via RDMA failed with error code {result}.")
+                time.sleep(10)
+            else:
+                break
+
+                # raise RuntimeError(f"Batch transfer weights via RDMA failed with error code {result}.")
 
         # Additionally wait for the queue to be fully processed to avoid race conditions
         # This ensures all tasks have been processed by calling task_done()
