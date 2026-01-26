@@ -6,15 +6,14 @@ from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 
 import ray
-import sglang.srt.distributed.parallel_state as sglang_parallel_state
-import sglang.srt.layers.dp_attention as sglang_dp_attention
-import sglang.srt.server_args as sglang_server_args
 import torch
 from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
+from sglang.srt import server_args as server_args_module
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.remote_instance_weight_loader_utils import register_memory_region_v2
 from sglang.srt.server_args import ServerArgs
@@ -91,13 +90,6 @@ class ExecutableQueue:
 
             except queue.Empty:
                 continue
-            except Exception as e:
-                logging.error(f"Error in background worker: {e}")
-                self._queue.task_done()
-                with self._lock:
-                    self._active_tasks -= 1
-                    if self._active_tasks == 0:
-                        self._tasks_completed.set()
 
     def start(self):
         """Start the background worker thread."""
@@ -145,19 +137,20 @@ class TransferBundle:
     engine: TransferEngine
     weight_memory_registry: dict
     remote_weight_infos: list[RemoteWeightInfo]
-    _cached_params_dict: dict
-    # Local buffer to check for parameter readiness before transfer 
-    _update_pending: dict[str, int]
+    _cached_params_dict: dict = dataclasses.field(default_factory=dict)
+    # Local buffer to check for parameter readiness before transfer
+    _update_pending: dict[str, int] = dataclasses.field(default_factory=dict)
 
     @property
     def params_dict(self):
-        if self._cached_params_dict is None:
-            self._cached_params_dict = dict(self.named_parameters())
+        if not self._cached_params_dict:
+            self._cached_params_dict = dict(self.model_replica.named_parameters())
+            # logger.info("Full param list: " + str(list(self._cached_params_dict.keys())))
         return self._cached_params_dict
 
     def reset(self):
         self._update_pending = {}
-    
+
     def add_remote_session(self, remote_info: RemoteWeightInfo) -> None:
         self.remote_weight_infos.append(remote_info)
 
@@ -169,14 +162,15 @@ class TransferBundle:
                 logger.warning(f"Parameter {mapped} not found in model replica.")
                 continue
             if num_shards == 1:
-                transfer_ready_params.append(name)
+                transfer_ready_params.append(mapped)
             else:
+                # logger.info(f"Sharded param {name} mapped to {mapped} shard {shard}/{num_shards}")
                 if mapped not in self._update_pending:
                     self._update_pending[mapped] = num_shards - 1
                 else:
                     self._update_pending[mapped] -= 1
                 if self._update_pending[mapped] == 0:
-                    transfer_ready_params.append(name)
+                    transfer_ready_params.append(mapped)
         return transfer_ready_params
 
     def execute_each(self, names: Sequence[str], executable_queue: ExecutableQueue = None) -> None:
@@ -295,8 +289,9 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                     self.rollout_engines[engine_ind].get_remote_instance_transfer_engine_info.remote(rank=engine_rank)
                 )
                 parallelism_info = ray.get(
-                    self.rollout_engines[engine_ind].get_parallelism_info.remote(rank=engine_rank))
-                
+                    self.rollout_engines[engine_ind].get_parallelism_info.remote(rank=engine_rank)
+                )
+
                 self.session_id_to_engine_rank[session_id] = engine_rank
                 self.session_id_to_server_args[session_id] = create_server_args_from_dict(
                     ray.get(self.rollout_engines[engine_ind].get_server_info.remote())
@@ -321,13 +316,15 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                 for target in targets:
                     session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
                     remote_info = RemoteWeightInfo(session_id, self.remote_weight_infos_by_session_id[session_id][0])
-                    parallelism_config = RankParallelismConfig.from_dict(self.remote_weight_infos_by_session_id[session_id][1])
+                    parallelism_config = RankParallelismConfig.from_dict(
+                        self.remote_weight_infos_by_session_id[session_id][1]
+                    )
                     if target.engine_rank not in self.engines:
                         transfer_engine = self._create_transfer_engine()
-                        logger.info(
-                            f"[RDMA] Creating model replica for engine rank {target.engine_rank} with rank dict {parallel_rank_dict}"
+                        logger.info(f"[RDMA] Creating model replica for engine rank {target.engine_rank}")
+                        model_replica = self._create_inference_replica(
+                            parallelism_config, self.args.hf_checkpoint, self.session_id_to_server_args[session_id]
                         )
-                        model_replica = self._create_inference_replica(parallelism_config, self.model_name, self.session_id_to_server_args[session_id])
                         print_memory(f"[RDMA] After model replica at {target.engine_rank}")
                         weight_memory_registry = self._register_replica_memory(
                             model_replica, self.remote_weight_infos_by_session_id[session_id][0], transfer_engine
@@ -378,6 +375,7 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             model_loader_extra_config=server_args.model_loader_extra_config,
             rl_quant_profile=server_args.rl_quant_profile,
         )
+        server_args_module._global_server_args = server_args
         with ParallelismContext(parallelism_config):
             model = get_model(
                 model_config=ModelConfig(model_path),
@@ -387,7 +385,6 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
         device = next(model.parameters()).device
         logger.info(f" Model {device}, params: {sum(p.numel() for p in model.parameters())} ")
         return model
-
 
     def leader_post_update(self) -> None:
         ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
@@ -444,7 +441,6 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             # This is critical to prevent race conditions with memory offloading
             logging.info("[RDMA] Synchronizing CUDA to ensure all asynchronous operations complete...")
             torch.cuda.synchronize()
-            self.executable_queue.shutdown()
             for transfer_bundle in self.engines.values():
                 transfer_bundle.reset()
 
@@ -454,6 +450,5 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             torch_memory_saver.pause(self.tag)
             self._model_on_cpu = True
             print_memory("[RDMA] After offloading model replica")
-        
-        return
 
+        return
