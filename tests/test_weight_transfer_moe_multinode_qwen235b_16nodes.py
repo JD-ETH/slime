@@ -44,6 +44,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     decoder_last_pipeline_num_layers: int = 22
     wait_after: bool = False
     enable_nccl_nvls: bool = False
+    bucket_size: float = 1.0
 
     def validate(self):
         if self.multinode:
@@ -206,7 +207,7 @@ def execute(args: ScriptArgs):
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     if args.sglang_dp > 1:
         sglang_args += "--sglang-enable-dp-attention "
-    mem = (2 * 1024 * 1024 * 1024) if args.pipelined_transfer and args.mode == "rdma" else (4 * 1024 * 1024 * 1024)
+    mem = (args.bucket_size * 1024 * 1024 * 1024) if args.pipelined_transfer and args.mode == "rdma" else (4 * 1024 * 1024 * 1024)
     if args.pipelined_transfer and args.mode == "rdma":
         sglang_args += "--rdma-pipelined-transfer "
 
