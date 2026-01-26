@@ -157,16 +157,30 @@ class TransferBundle:
     def get_transfer_ready_params(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> list[str]:
         transfer_ready_params = []
         for name, _ in converted_named_tensors:
-            mapped, shard, num_shards, expert = self.model_replica.map_weight_name(name)
+            mapped, shard, num_shards, expert, num_experts = self.model_replica.map_weight_name(name)
             if mapped not in self.params_dict:
                 logger.warning(f"Parameter {mapped} not found in model replica.")
                 continue
-            if num_shards == 1:
+
+            # Calculate total expected contributions for this parameter
+            if num_experts > 0:
+                # Expert weight: need all experts * shard types
+                # For w13_weight (gate+up): shard is "w1" or "w3", multiplier = 2
+                # For w2_weight (down): shard is "w2", multiplier = 1
+                if shard in ("w1", "w3"):
+                    total_expected = num_experts * 2  # Both gate and up projections
+                else:  # "w2"
+                    total_expected = num_experts
+            else:
+                # Non-expert weight: just count shards
+                total_expected = num_shards
+
+            if total_expected == 1:
                 transfer_ready_params.append(mapped)
             else:
-                # logger.info(f"Sharded param {name} mapped to {mapped} shard {shard}/{num_shards}")
+                # logger.info(f"Sharded param {name} mapped to {mapped} shard {shard}, expert {expert}, expecting {total_expected}")
                 if mapped not in self._update_pending:
-                    self._update_pending[mapped] = num_shards - 1
+                    self._update_pending[mapped] = total_expected - 1
                 else:
                     self._update_pending[mapped] -= 1
                 if self._update_pending[mapped] == 0:
