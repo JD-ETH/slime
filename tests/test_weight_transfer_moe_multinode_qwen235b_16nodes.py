@@ -25,7 +25,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_cp: int = 2
     train_etp: int = 1
     sglang_tp: int = 32  # NOTE: for sglang, moe_tp_size = tp_size // ep_size
-    sglang_dp: int = 4
+    sglang_dp: int = 1 # baseline NCCL hangs when dp = 4 and nccl 2.27
     sglang_ep: int = 32
     sglang_pp: int = 1
     # Total Ressources
@@ -204,7 +204,8 @@ def execute(args: ScriptArgs):
     )
     if args.mode == "rdma":
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
-    
+    if args.sglang_dp > 1:
+        sglang_args += "--sglang-enable-dp-attention "
     mem = (2 * 1024 * 1024 * 1024) if args.pipelined_transfer and args.mode == "rdma" else (4 * 1024 * 1024 * 1024)
     if args.pipelined_transfer and args.mode == "rdma":
         sglang_args += "--rdma-pipelined-transfer "
