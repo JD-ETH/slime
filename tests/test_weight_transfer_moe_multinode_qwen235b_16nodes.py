@@ -221,7 +221,7 @@ def execute(args: ScriptArgs):
         f"--actor-num-nodes {args.num_train_gpus // GPUS_PER_NODE} "
         f"--actor-num-gpus-per-node {GPUS_PER_NODE} "
         # 4GB buffer for weight update
-        f"--update-weight-buffer-size {4 * 1024 * 1024 * 1024} "
+        f"--update-weight-buffer-size {2 * 1024 * 1024 * 1024} "
         # enable correctness check
         f"--check-weight-update-equal "
     )
