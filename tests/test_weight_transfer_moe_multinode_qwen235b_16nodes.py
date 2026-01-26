@@ -204,6 +204,8 @@ def execute(args: ScriptArgs):
     )
     if args.mode == "rdma":
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
+    
+    mem = (2 * 1024 * 1024 * 1024) if args.pipelined_transfer and args.mode == "rdma" else (4 * 1024 * 1024 * 1024)
     if args.pipelined_transfer and args.mode == "rdma":
         sglang_args += "--rdma-pipelined-transfer "
 
@@ -221,7 +223,7 @@ def execute(args: ScriptArgs):
         f"--actor-num-nodes {args.num_train_gpus // GPUS_PER_NODE} "
         f"--actor-num-gpus-per-node {GPUS_PER_NODE} "
         # 4GB buffer for weight update
-        f"--update-weight-buffer-size {2 * 1024 * 1024 * 1024} "
+        f"--update-weight-buffer-size {mem} "
         # enable correctness check
         f"--check-weight-update-equal "
     )
