@@ -77,7 +77,7 @@ class ExecutableQueue:
         while not self._shutdown_event.is_set():
             try:
                 # Get task with timeout to allow periodic shutdown checks
-                task = self._queue.get(timeout=0.1)
+                task = self._queue.get(timeout=0.01)
                 try:
                     # Execute the RDMA transfer
                     logger.info(f"[RDMA] Executing transfer task for session {task.session_id}...")
@@ -499,7 +499,9 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             # Add CUDA synchronization to ensure all asynchronous RDMA operations are complete
             # This is critical to prevent race conditions with memory offloading
             logging.info("[RDMA] Synchronizing CUDA to ensure all asynchronous operations complete...")
+            
             torch.cuda.synchronize()
+            torch.distributed.barrier()
         
         
         for transfer_bundle in self.engines.values():
