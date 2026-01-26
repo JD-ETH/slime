@@ -207,7 +207,7 @@ def execute(args: ScriptArgs):
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     if args.sglang_dp > 1:
         sglang_args += "--sglang-enable-dp-attention "
-    mem = (args.bucket_size * 1024 * 1024 * 1024) if args.pipelined_transfer and args.mode == "rdma" else (4 * 1024 * 1024 * 1024)
+    mem = int(args.bucket_size * 1024 * 1024 * 1024) if args.pipelined_transfer and args.mode == "rdma" else (4 * 1024 * 1024 * 1024)
     if args.pipelined_transfer and args.mode == "rdma":
         sglang_args += "--rdma-pipelined-transfer "
 
