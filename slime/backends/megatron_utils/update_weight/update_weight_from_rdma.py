@@ -524,7 +524,8 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
             logging.info("[RDMA] Synchronizing CUDA to ensure all asynchronous operations complete...")
             
             torch.cuda.synchronize()
-            torch.distributed.barrier()
+            # NOTE: necessary or not?
+            # torch.distributed.barrier()
         
         
         for transfer_bundle in self.engines.values():
