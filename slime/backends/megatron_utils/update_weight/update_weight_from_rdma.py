@@ -145,6 +145,7 @@ class TransferBundle:
     _update_pending: dict[str, int] = dataclasses.field(default_factory=dict)
     start_expert_id: int = -1
     end_expert_id: int = -1
+    rollout_ep_rank: int = 0
     rollout_ep_size: int = 1
 
     @property
@@ -165,6 +166,12 @@ class TransferBundle:
         for name, _ in converted_named_tensors:
             mapped, shard, num_shards, expert, num_experts = self.model_replica.map_weight_name(name)
             # NOTE: for ep, only `num_local_experts` should be loaded
+            start_expert_id = self.rollout_ep_rank * (
+                num_experts // self.rollout_ep_size
+            )
+            end_expert_id = (self.rollout_ep_rank + 1) * (
+                num_experts // self.rollout_ep_size
+            )            
             num_experts = num_experts // self.rollout_ep_size
             if not (expert >= self.start_expert_id and expert < self.end_expert_id):
                 continue
@@ -353,36 +360,37 @@ class UpdateWeightFromRDMA(UpdateWeightFromRemote):
                         model_replica, self.remote_weight_infos_by_session_id[session_id][0], transfer_engine
                     )
                     # TODO: not sure if `config.num_experts` exists for all model configs
-                    start_expert_id = parallelism_config.ep_rank * (
-                        model_replica.config.num_experts // parallelism_config.ep_size
-                    )
-                    end_expert_id = (parallelism_config.ep_rank + 1) * (
-                        model_replica.config.num_experts // parallelism_config.ep_size
-                    )
+                    # start_expert_id = parallelism_config.ep_rank * (
+                    #     model_replica.config.num_experts // parallelism_config.ep_size
+                    # )
+                    # end_expert_id = (parallelism_config.ep_rank + 1) * (
+                    #     model_replica.config.num_experts // parallelism_config.ep_size
+                    # )
                     self.engines[target.engine_rank] = TransferBundle(
                         model_replica,
                         transfer_engine,
                         weight_memory_registry,
                         [remote_info],
                         rollout_ep_size=parallelism_config.ep_size,
-                        start_expert_id=start_expert_id,
-                        end_expert_id=end_expert_id,
+                        rollout_ep_rank=parallelism_config.ep_rank,
+                        start_expert_id=-1,
+                        end_expert_id=-1,
                     )
                 else:
                     assert (
                         parallelism_config.ep_size == self.engines[target.engine_rank].rollout_ep_size
                     ), "all ep_size of rollout engines should be same"
                     model_replica = self.engines[target.engine_rank].model_replica
-                    start_expert_id = parallelism_config.ep_rank * (
-                        model_replica.config.num_experts // parallelism_config.ep_size
-                    )
-                    end_expert_id = (parallelism_config.ep_rank + 1) * (
-                        model_replica.config.num_experts // parallelism_config.ep_size
-                    )
-                    assert (
-                        start_expert_id == self.engines[target.engine_rank].start_expert_id
-                        and end_expert_id == self.engines[target.engine_rank].end_expert_id
-                    )
+                    # start_expert_id = parallelism_config.ep_rank * (
+                    #     model_replica.config.num_experts // parallelism_config.ep_size
+                    # )
+                    # end_expert_id = (parallelism_config.ep_rank + 1) * (
+                    #     model_replica.config.num_experts // parallelism_config.ep_size
+                    # )
+                    # assert (
+                    #     start_expert_id == self.engines[target.engine_rank].start_expert_id
+                    #     and end_expert_id == self.engines[target.engine_rank].end_expert_id
+                    # )
                     self.engines[target.engine_rank].add_remote_session(remote_info)
 
             print_memory("[RDMA] After Local Engine Replicas and engine Creation")
