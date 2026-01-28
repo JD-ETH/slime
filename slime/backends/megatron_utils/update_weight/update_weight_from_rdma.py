@@ -166,21 +166,22 @@ class TransferBundle:
         for name, _ in converted_named_tensors:
             mapped, shard, num_shards, expert, num_experts = self.model_replica.map_weight_name(name)
             # NOTE: for ep, only `num_local_experts` should be loaded
-            start_expert_id = self.rollout_ep_rank * (
-                num_experts // self.rollout_ep_size
-            )
-            end_expert_id = (self.rollout_ep_rank + 1) * (
-                num_experts // self.rollout_ep_size
-            )            
-            num_experts = num_experts // self.rollout_ep_size
-            if not (expert >= start_expert_id and expert < end_expert_id):
-                continue
+            
             if mapped not in self.params_dict:
                 logger.warning(f"Parameter {mapped} not found in model replica.")
                 continue
 
             # Calculate total expected contributions for this parameter
             if num_experts > 0:
+                start_expert_id = self.rollout_ep_rank * (
+                    num_experts // self.rollout_ep_size
+                )
+                end_expert_id = (self.rollout_ep_rank + 1) * (
+                    num_experts // self.rollout_ep_size
+                )            
+                num_experts = num_experts // self.rollout_ep_size
+                if not (expert >= start_expert_id and expert < end_expert_id):
+                    continue
                 # Expert weight: need all experts * shard types
                 # For w13_weight (gate+up): shard is "w1" or "w3", multiplier = 2
                 # For w2_weight (down): shard is "w2", multiplier = 1
