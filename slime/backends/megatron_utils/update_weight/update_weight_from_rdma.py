@@ -173,7 +173,7 @@ class TransferBundle:
                 num_experts // self.rollout_ep_size
             )            
             num_experts = num_experts // self.rollout_ep_size
-            if not (expert >= self.start_expert_id and expert < self.end_expert_id):
+            if not (expert >= start_expert_id and expert < end_expert_id):
                 continue
             if mapped not in self.params_dict:
                 logger.warning(f"Parameter {mapped} not found in model replica.")
