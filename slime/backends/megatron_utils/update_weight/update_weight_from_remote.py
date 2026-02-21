@@ -97,19 +97,14 @@ class UpdateWeightFromRemote:
             expert_params_and_buffers = expert_named_params_and_buffers(self.args, self.model)
             with timer("non_expert_transfer"):
                 self._update_weights(non_expert_params_and_buffers)
-                if self.weight_update_mode == "nccl":
-                    dist.barrier(group=get_gloo_group())
             with timer("expert_transfer"):
                 self._update_expert_weights(expert_params_and_buffers)
-                if self.weight_update_mode == "nccl":
-                    dist.barrier(group=get_gloo_group())
             with timer("final_trans"):
                 self.finish_transfer_task()
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
             self.leader_post_update()
-        dist.barrier(group=get_gloo_group())
 
     @torch.no_grad()
     def update_weights(self) -> None:
